@@ -1,0 +1,9 @@
+batch_size: 32
+config_file: null
+data_dir: ./data/cifar100
+device: cuda
+learning_rate: 0.001
+log_dir: runs
+model: resnet18
+num_epochs: 10
+weight_path: null
