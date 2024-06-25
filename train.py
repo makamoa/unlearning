@@ -8,6 +8,7 @@ import torch.nn as nn
 from datetime import datetime
 from models import get_model
 from data import get_cifar100_dataloaders
+from optimizer import SAM
 
 def get_current_datetime_string():
     """
@@ -65,7 +66,10 @@ def print_metrics(metrics, epoch, num_epochs):
           f'Validation Top-1 Accuracy: {metrics["val_top1"]:.2f}%, '
           f'Validation Top-5 Accuracy: {metrics["val_top5"]:.2f}%')
 
-def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.001, log_dir='runs', device='cuda'):
+def build_name_prefix(args):
+    return f'sam_{args.use_sam}_rho_{args.rho}_lr_{args.learning_rate}_' + get_current_datetime_string()
+
+def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.001, log_dir='runs', device='cuda', use_sam=False, rho=0.05, name_prefix=get_current_datetime_string()):
     """
     Trains the given model on the provided training data and evaluates it on the validation data.
 
@@ -76,14 +80,20 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     :param learning_rate: Learning rate for the optimizer.
     :param log_dir: Directory to save TensorBoard logs.
     :param device: Device to use for training (e.g., 'cuda', 'cuda:0', 'cuda:1', 'cpu').
+    :param use_sam: Boolean to indicate whether to use SAM optimizer.
     """
 
-    # Define loss function and optimizer
+    # Define loss function
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    if use_sam:
+        base_optimizer = optim.SGD
+        optimizer = SAM(model.parameters(), base_optimizer, lr=learning_rate, momentum=0.9, rho=rho)
+    else:
+        optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
 
     # Initialize TensorBoard SummaryWriter
-    writer = SummaryWriter(os.path.join(log_dir, get_current_datetime_string()))
+    writer = SummaryWriter(os.path.join(log_dir, name_prefix))
 
     # Training loop
     for epoch in range(num_epochs):
@@ -94,15 +104,23 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
             # Move data to the appropriate device
             inputs, labels = inputs.to(device), labels.to(device)
 
-            # Zero the parameter gradients
-            optimizer.zero_grad()
+            if use_sam:
+                # First forward-backward pass
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.first_step(zero_grad=True)
 
-            # Forward pass
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            # Backward pass and optimize
-            loss.backward()
-            optimizer.step()
+                # Second forward-backward pass
+                criterion(model(inputs), labels).backward()
+                optimizer.second_step(zero_grad=True)
+            else:
+                # Standard forward-backward pass
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
 
             top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
             update_metrics(metrics, loss, top1, top5, inputs.size(0), mode='train')
@@ -155,7 +173,7 @@ def main(args):
     model.to(device)
 
     # Train the model
-    train_model(model, train_loader, val_loader, num_epochs=args.num_epochs, learning_rate=args.learning_rate, log_dir=args.log_dir, device=device)
+    train_model(model, train_loader, val_loader, num_epochs=args.num_epochs, learning_rate=args.learning_rate, log_dir=args.log_dir, device=device, use_sam=args.use_sam, rho=args.rho, name_prefix=args.name_prefix)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a model on CIFAR-100 with TensorBoard logging.")
@@ -168,13 +186,19 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, default='resnet18', help='Model architecture to use.')
     parser.add_argument('--weight_path', type=str, help='Path to model weights file.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., "cpu", "cuda", "cuda:0", "cuda:1").')
+    parser.add_argument('--use_sam', action='store_true', help='Whether to use SAM optimizer or not')
+    parser.add_argument('--rho', type=float, default=None, help='SAM radius parameter')
+    parser.add_argument('--name_prefix', type=str, default=None,
+                        help='Define name prefix to store results (same prefix is used for logs, checkpoints, weights, etc).')
 
     args = parser.parse_args()
+    if args.name_prefix is None:
+        args.name_prefix = build_name_prefix(args)
     if args.config_file:
         config = load_config(args.config_file)
         args = argparse.Namespace(**config)
     else:
         os.makedirs(args.log_dir, exist_ok=True)
         config = vars(args)
-        save_config(config, os.path.join(args.log_dir, 'config.yaml'))
+        save_config(config, os.path.join(args.log_dir, args.name_prefix + '.yaml'))
     main(args)
