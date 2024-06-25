@@ -81,6 +81,8 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     :param log_dir: Directory to save TensorBoard logs.
     :param device: Device to use for training (e.g., 'cuda', 'cuda:0', 'cuda:1', 'cpu').
     :param use_sam: Boolean to indicate whether to use SAM optimizer.
+    :param rho: Hyperparameter for SAM optimizer.
+    :param name_prefix: Prefix for naming the log directory and saved model.
     """
 
     # Define loss function
@@ -125,7 +127,7 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
             top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
             update_metrics(metrics, loss, top1, top5, inputs.size(0), mode='train')
 
-        average_metrics(metrics, len(train_loader), mode='train')
+        average_metrics(metrics, len(train_loader.dataset), mode='train')
 
         # Validation loop
         model.eval()
@@ -141,10 +143,15 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
                 top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
                 update_metrics(metrics, loss, top1, top5, inputs.size(0), mode='val')
 
-        average_metrics(metrics, len(val_loader), mode='val')
+        average_metrics(metrics, len(val_loader.dataset), mode='val')
         print_metrics(metrics, epoch, num_epochs)
         log_metrics(writer, metrics, epoch, mode='train')
         log_metrics(writer, metrics, epoch, mode='val')
+
+    # Save the final model
+    model_save_path = os.path.join(log_dir, f"{name_prefix}_model.pth")
+    torch.save(model.state_dict(), model_save_path)
+    print(f'Model saved to {model_save_path}')
 
     # Save model graph
     sample_inputs = next(iter(train_loader))[0].to(device)
@@ -152,7 +159,6 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
 
     # Close the TensorBoard writer
     writer.close()
-
     print('Training complete')
 
 def save_config(config, filename):
