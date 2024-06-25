@@ -127,7 +127,7 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
             top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
             update_metrics(metrics, loss, top1, top5, inputs.size(0), mode='train')
 
-        average_metrics(metrics, len(train_loader.dataset), mode='train')
+        average_metrics(metrics, len(train_loader), mode='train')
 
         # Validation loop
         model.eval()
@@ -143,7 +143,7 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
                 top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
                 update_metrics(metrics, loss, top1, top5, inputs.size(0), mode='val')
 
-        average_metrics(metrics, len(val_loader.dataset), mode='val')
+        average_metrics(metrics, len(val_loader), mode='val')
         print_metrics(metrics, epoch, num_epochs)
         log_metrics(writer, metrics, epoch, mode='train')
         log_metrics(writer, metrics, epoch, mode='val')
@@ -194,8 +194,7 @@ if __name__ == "__main__":
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., "cpu", "cuda", "cuda:0", "cuda:1").')
     parser.add_argument('--use_sam', action='store_true', help='Whether to use SAM optimizer or not')
     parser.add_argument('--rho', type=float, default=None, help='SAM radius parameter')
-    parser.add_argument('--name_prefix', type=str, default=None,
-                        help='Define name prefix to store results (same prefix is used for logs, checkpoints, weights, etc).')
+    parser.add_argument('--name_prefix', type=str, default=None, help='Define name prefix to store results (same prefix is used for logs, checkpoints, weights, etc).')
 
     args = parser.parse_args()
     if args.name_prefix is None:
