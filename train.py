@@ -42,7 +42,7 @@ def initialize_metrics():
         'val_top5': 0.0
     }
 
-def update_metrics(metrics, loss, top1, top5, inputs_size, mode='train'):
+def update_metrics(metrics, loss, top1, top5, mode='train'):
     metrics[f'{mode}_loss'] += loss.item()
     metrics[f'{mode}_top1'] += top1.item()
     metrics[f'{mode}_top5'] += top5.item()
@@ -125,7 +125,7 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
                 optimizer.zero_grad()
 
             top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
-            update_metrics(metrics, loss, top1, top5, inputs.size(0), mode='train')
+            update_metrics(metrics, loss, top1, top5, mode='train')
 
         average_metrics(metrics, len(train_loader), mode='train')
 
@@ -141,7 +141,7 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
                 loss = criterion(outputs, labels)
 
                 top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
-                update_metrics(metrics, loss, top1, top5, inputs.size(0), mode='val')
+                update_metrics(metrics, loss, top1, top5, mode='val')
 
         average_metrics(metrics, len(val_loader), mode='val')
         print_metrics(metrics, epoch, num_epochs)
@@ -160,6 +160,105 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     # Close the TensorBoard writer
     writer.close()
     print('Training complete')
+
+
+def untrain_model(model, retainloader, forgetloader, validloader, num_epochs, retainloss, forgetloss, log_dir, device, use_sam, retain_optimizer, forget_optimizer, name_prefix=get_current_datetime_string()):
+
+    # Initialize TensorBoard SummaryWriter
+    writer = SummaryWriter(os.path.join(log_dir, name_prefix))
+
+    # Define loss function for validation
+    criterion = nn.CrossEntropyLoss()
+
+    for epoch in range(num_epochs):
+        model.train()
+        metrics = initialize_metrics()
+
+        # untraining loop
+        for retain_batch, forget_batch in zip(retainloader, forgetloader):
+            retain_inputs, retain_labels = retain_batch
+            forget_inputs, forget_labels = forget_batch
+
+            retain_inputs, retain_labels = retain_inputs.to(device), retain_labels.to(device)
+            forget_inputs, forget_labels = forget_inputs.to(device), forget_labels.to(device)
+            # retain_optimizer stage
+            if use_sam:
+                retain_loss_value = retainloss(model(retain_inputs), retain_labels)
+                retain_loss_value.backward()
+                retain_optimizer.first_step(zero_grad=True)
+
+                retain_loss_value = retainloss(model(retain_inputs), retain_labels)
+                retain_loss_value.backward()
+                retain_optimizer.second_step(zero_grad=True)
+
+            else:
+                retain_loss_value = retainloss(model(retain_inputs), retain_labels)
+                retain_loss_value.backward()
+                retain_optimizer.step()
+                retain_optimizer.zero_grad()
+
+            # forget_optimizer_stage
+            if use_sam:
+                forget_loss_value = forgetloss(model(forget_inputs), forget_labels)
+                forget_loss_value.backward()
+                forget_optimizer.first_step(zero_grad=True)
+
+                forget_loss_value = forgetloss(model(forget_inputs), forget_labels)
+                forget_loss_value.backward()
+                forget_optimizer.second_step(zero_grad=True)
+
+            else:
+                forget_loss_value = forgetloss(model(forget_inputs), forget_labels)
+                forget_loss_value.backward()
+                forget_optimizer.step()
+                forget_optimizer.zero_grad()
+
+            top1, top5 = calculate_accuracy(model(retain_inputs), retain_labels, topk=(1, 5))
+            update_metrics(metrics, retain_loss_value.item(), top1, top5, inputs.size(0), mode='train')
+
+        average_metrics(metrics, len(retainloader), mode='train')
+
+        # Validation loop
+        model.eval()
+        with torch.no_grad():
+            for inputs, labels in validloader:
+                # Move data to the appropriate device
+                inputs, labels = inputs.to(device), labels.to(device)
+
+                # Forward pass
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+
+                top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
+                update_metrics(metrics, loss, top1, top5, inputs.size(0), mode='val')
+
+        average_metrics(metrics, len(validloader), mode='val')
+        print_metrics(metrics, epoch, num_epochs)
+        log_metrics(writer, metrics, epoch, mode='train')
+        log_metrics(writer, metrics, epoch, mode='val')
+
+    # Save the final model
+    model_save_path = os.path.join(log_dir, f"{name_prefix}_model.pth")
+    torch.save(model.state_dict(), model_save_path)
+    print(f'Model saved to {model_save_path}')
+
+    # Save model graph
+    sample_inputs = next(iter(train_loader))[0].to(device)
+    writer.add_graph(model, sample_inputs)
+
+    # Close the TensorBoard writer
+    writer.close()
+    print('Training complete')
+
+
+    return avg_retain_loss, avg_forget_loss, avg_loss_difference
+
+# Example usage of `get_current_datetime_string` (to be replaced with actual implementation)
+def get_current_datetime_string():
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d%H%M%S")
+
+
 
 def save_config(config, filename):
     with open(filename, 'w') as f:
