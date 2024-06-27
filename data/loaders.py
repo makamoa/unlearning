@@ -5,7 +5,8 @@ from torch.utils.data.sampler import SubsetRandomSampler
 import numpy as np
 
 class BaseDatasetHandler:
-    def __init__(self, batch_size, validation_split, num_workers, data_dir, random_seed):
+    def __init__(self, batch_size, validation_split, num_workers, data_dir,
+                 random_seed):
         assert validation_split >= 0. and validation_split < 1.
         assert batch_size >= 1
         self.data_dir = data_dir
@@ -37,24 +38,32 @@ class BaseDatasetHandler:
         return trainloader, validloader, testloader
     
     def _create_trainloader(self, dataset, sampler):
-        return torch.utils.data.DataLoader(dataset, batch_size=self.batch_size, sampler=sampler, num_workers=self.num_workers)
+        return torch.utils.data.DataLoader(dataset,
+                                           batch_size=self.batch_size,
+                                           sampler=sampler,
+                                           num_workers=self.num_workers)
     
     def _create_testloader(self, dataset):
-        return torch.utils.data.DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+        return torch.utils.data.DataLoader(dataset, 
+                                           batch_size=self.batch_size,
+                                           shuffle=False,
+                                           num_workers=self.num_workers)
 
     def create_transformations(self):
-        raise NotImplementedError("This method should be overridden by subclasses")
+        raise NotImplementedError
     
     def get_datasets(self):
-        raise NotImplementedError("This method should be overridden by subclasses")
+        raise NotImplementedError
 
     def get_dataloaders(self):
-        raise NotImplementedError("This method should be overridden by subclasses")
+        raise NotImplementedError
 
 
 class CIFAR100Handler(BaseDatasetHandler):
-    def __init__(self, batch_size=64, validation_split=0.1, num_workers=2, data_dir='./data/cifar100', random_seed=None):
-        super().__init__(batch_size, validation_split, num_workers, data_dir, random_seed)
+    def __init__(self, batch_size=64, validation_split=0.1, num_workers=2,
+                 data_dir='./data/cifar100', random_seed=None):
+        super().__init__(batch_size, validation_split, num_workers, data_dir,
+                         random_seed)
 
     def create_transformations(self):
         # Define the transform for the training and testing data
@@ -62,12 +71,14 @@ class CIFAR100Handler(BaseDatasetHandler):
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
+            transforms.Normalize((0.5071, 0.4867, 0.4408), \
+                                 (0.2675, 0.2565, 0.2761)),
         ])
 
         transform_test = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
+            transforms.Normalize((0.5071, 0.4867, 0.4408), \
+                                 (0.2675, 0.2565, 0.2761)),
         ])
 
         return transform_train, transform_test
@@ -76,11 +87,15 @@ class CIFAR100Handler(BaseDatasetHandler):
         transform_train, transform_test = self.create_transformations()
         # Download and load the CIFAR-100 training dataset
         trainset = torchvision.datasets.CIFAR100(
-            root=self.data_dir, train=True, download=True, transform=transform_train)
+            root=self.data_dir, train=True, download=True,
+            transform=transform_train
+            )
 
         # Download and load the CIFAR-100 test dataset
         testset = torchvision.datasets.CIFAR100(
-            root=self.data_dir, train=False, download=True, transform=transform_test)
+            root=self.data_dir, train=False, download=True,
+            transform=transform_test
+            )
         
         return trainset, testset
 
@@ -104,7 +119,7 @@ class AmendedDatasetHandler(BaseDatasetHandler):
                 amended and retained data points in the train set, and the 
                 indices in the validation set.
             forget_retain_function (function): A function that takes 
-                the indices of the amended and retained data points in the 
+                the indices of the amended and retained train data points in the 
                 train set and returns the indices to be used for 
                 the forgetloader and retainloader.
             random_seed (int, optional): A seed for random number generation 
@@ -168,5 +183,7 @@ def get_dataloaders(dataset='cifar100', **kwargs):
 
 if __name__ == '__main__':
     # Example usage
-    trainloader, validloader, testloader = get_dataloaders(dataset='cifar100', batch_size=128, data_dir='./media/cifar100')
+    trainloader, validloader, testloader = \
+        get_dataloaders(dataset='cifar100', batch_size=128,
+                        data_dir='./media/cifar100')
     print(trainloader.__len__())

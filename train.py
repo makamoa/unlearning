@@ -7,7 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch.nn as nn
 from datetime import datetime
 from models import get_model
-from data import get_cifar100_dataloaders
+import data
 from optimizer import SAM
 
 def get_current_datetime_string():
@@ -17,6 +17,7 @@ def get_current_datetime_string():
     """
     now = datetime.now()
     return now.strftime("%m-%d-%H:%M:%S")
+
 
 def calculate_accuracy(output, target, topk=(1,)):
     maxk = max(topk)
@@ -31,6 +32,7 @@ def calculate_accuracy(output, target, topk=(1,)):
         correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
+
 
 def initialize_metrics():
     return {
@@ -47,15 +49,18 @@ def update_metrics(metrics, loss, top1, top5, mode='train'):
     metrics[f'{mode}_top1'] += top1.item()
     metrics[f'{mode}_top5'] += top5.item()
 
+
 def average_metrics(metrics, dataset_size, mode='train'):
     metrics[f'{mode}_loss'] /= dataset_size
     metrics[f'{mode}_top1'] /= dataset_size
     metrics[f'{mode}_top5'] /= dataset_size
 
+
 def log_metrics(writer, metrics, epoch, mode='train'):
     writer.add_scalar(f'Loss/{mode}', metrics[f'{mode}_loss'], epoch)
     writer.add_scalar(f'Accuracy/{mode}_top1', metrics[f'{mode}_top1'], epoch)
     writer.add_scalar(f'Accuracy/{mode}_top5', metrics[f'{mode}_top5'], epoch)
+
 
 def print_metrics(metrics, epoch, num_epochs):
     print(f'Epoch {epoch+1}/{num_epochs}, '
@@ -66,8 +71,10 @@ def print_metrics(metrics, epoch, num_epochs):
           f'Validation Top-1 Accuracy: {metrics["val_top1"]:.2f}%, '
           f'Validation Top-5 Accuracy: {metrics["val_top5"]:.2f}%')
 
+
 def build_name_prefix(args):
     return f'sam_{args.use_sam}_rho_{args.rho}_lr_{args.learning_rate}_' + get_current_datetime_string()
+
 
 def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.001, log_dir='runs', device='cuda', use_sam=False, rho=0.05, name_prefix=get_current_datetime_string()):
     """
@@ -162,7 +169,63 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     print('Training complete')
 
 
-def untrain_model(model, retainloader, forgetloader, validloader, num_epochs, retainloss, forgetloss, log_dir, device, use_sam, retain_optimizer, forget_optimizer, name_prefix=get_current_datetime_string()):
+def perform_optimizer_step(model, inputs, labels, loss_fn, optimizer, use_sam):
+    """
+    Perform a single optimization step.
+
+    Args:
+        model: The neural network model.
+        inputs: Input batch
+        labels: Ground truth labels
+        loss_fn: Loss function.
+        optimizer: Optimizer.
+        use_sam: Boolean to indicate whether to use SAM optimizer.
+
+    Returns:
+        loss_value: Calculated loss value.
+    """
+    if use_sam:
+        loss_value = loss_fn(model(inputs), labels)
+        loss_value.backward()
+        optimizer.first_step(zero_grad=True)
+
+        loss_value = loss_fn(model(inputs), labels)
+        loss_value.backward()
+        optimizer.second_step(zero_grad=True)
+    else:
+        loss_value = loss_fn(model(inputs), labels)
+        loss_value.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+    return loss_value
+
+
+def untrain_model(model, retainloader, forgetloader, validloader, num_epochs,
+                  retainloss, forgetloss, log_dir, device, use_sam,
+                  retain_optimizer, forget_optimizer, name_prefix=None):
+    """
+    Unlearn a model based on the problem formulation
+    `minimize retainloss + forgetloss`. 
+
+    Args:
+        model: The neural network model.
+        retainloader: DataLoader for the data to be retained.
+        forgetloader: DataLoader for the data to be forgotten.
+        validloader: DataLoader for the validation data.
+        num_epochs: Number of epochs to untrain.
+        retainloss: Loss function for retained data.
+        forgetloss: Loss function for forgotten data.
+        log_dir: Directory to save TensorBoard logs.
+        device: Device to run the model on (e.g., 'cpu' or 'cuda').
+        use_sam: Boolean to indicate whether to use SAM optimizer.
+        retain_optimizer: Optimizer for the retain stage.
+        forget_optimizer: Optimizer for the forget stage.
+        name_prefix: Prefix for naming the log directory and saved model.
+    """
+
+    if name_prefix is None:
+        name_prefix = get_current_datetime_string()
 
     # Initialize TensorBoard SummaryWriter
     writer = SummaryWriter(os.path.join(log_dir, name_prefix))
@@ -174,47 +237,31 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs, re
         model.train()
         metrics = initialize_metrics()
 
-        # untraining loop
+        # Untraining loop
         for retain_batch, forget_batch in zip(retainloader, forgetloader):
             retain_inputs, retain_labels = retain_batch
             forget_inputs, forget_labels = forget_batch
 
-            retain_inputs, retain_labels = retain_inputs.to(device), retain_labels.to(device)
-            forget_inputs, forget_labels = forget_inputs.to(device), forget_labels.to(device)
+            retain_inputs, retain_labels = \
+                retain_inputs.to(device), retain_labels.to(device)
+            forget_inputs, forget_labels = \
+                forget_inputs.to(device), forget_labels.to(device)
             # retain_optimizer stage
-            if use_sam:
-                retain_loss_value = retainloss(model(retain_inputs), retain_labels)
-                retain_loss_value.backward()
-                retain_optimizer.first_step(zero_grad=True)
-
-                retain_loss_value = retainloss(model(retain_inputs), retain_labels)
-                retain_loss_value.backward()
-                retain_optimizer.second_step(zero_grad=True)
-
-            else:
-                retain_loss_value = retainloss(model(retain_inputs), retain_labels)
-                retain_loss_value.backward()
-                retain_optimizer.step()
-                retain_optimizer.zero_grad()
-
+            retain_loss_value = perform_optimizer_step(model,
+                                                       retain_inputs,
+                                                       retain_labels,
+                                                       retainloss,
+                                                       retain_optimizer,
+                                                       use_sam
+                                                       )
             # forget_optimizer_stage
-            if use_sam:
-                forget_loss_value = forgetloss(model(forget_inputs), forget_labels)
-                forget_loss_value.backward()
-                forget_optimizer.first_step(zero_grad=True)
+            perform_optimizer_step(model, forget_inputs, forget_labels,
+                                   forgetloss, forget_optimizer, use_sam)
 
-                forget_loss_value = forgetloss(model(forget_inputs), forget_labels)
-                forget_loss_value.backward()
-                forget_optimizer.second_step(zero_grad=True)
-
-            else:
-                forget_loss_value = forgetloss(model(forget_inputs), forget_labels)
-                forget_loss_value.backward()
-                forget_optimizer.step()
-                forget_optimizer.zero_grad()
-
-            top1, top5 = calculate_accuracy(model(retain_inputs), retain_labels, topk=(1, 5))
-            update_metrics(metrics, retain_loss_value.item(), top1, top5, inputs.size(0), mode='train')
+            top1, top5 = calculate_accuracy(model(retain_inputs),
+                                            retain_labels, topk=(1, 5))
+            update_metrics(metrics, retain_loss_value.item(), top1, top5,
+                           mode='train')
 
         average_metrics(metrics, len(retainloader), mode='train')
 
@@ -230,7 +277,7 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs, re
                 loss = criterion(outputs, labels)
 
                 top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
-                update_metrics(metrics, loss, top1, top5, inputs.size(0), mode='val')
+                update_metrics(metrics, loss, top1, top5, mode='val')
 
         average_metrics(metrics, len(validloader), mode='val')
         print_metrics(metrics, epoch, num_epochs)
@@ -243,15 +290,13 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs, re
     print(f'Model saved to {model_save_path}')
 
     # Save model graph
-    sample_inputs = next(iter(train_loader))[0].to(device)
+    sample_inputs = next(iter(retainloader))[0].to(device)
     writer.add_graph(model, sample_inputs)
 
     # Close the TensorBoard writer
     writer.close()
-    print('Training complete')
+    print('Unlearning complete')
 
-
-    return avg_retain_loss, avg_forget_loss, avg_loss_difference
 
 # Example usage of `get_current_datetime_string` (to be replaced with actual implementation)
 def get_current_datetime_string():
@@ -259,26 +304,35 @@ def get_current_datetime_string():
     return datetime.now().strftime("%Y%m%d%H%M%S")
 
 
-
 def save_config(config, filename):
     with open(filename, 'w') as f:
         yaml.dump(config, f)
+
 
 def load_config(filename):
     with open(filename, 'r') as f:
         return yaml.load(f, Loader=yaml.FullLoader)
 
+
 def main(args):
-    # Load CIFAR-100 dataset
-    train_loader, val_loader, test_loader = get_cifar100_dataloaders(batch_size=args.batch_size, validation_split=0.1, num_workers=2, random_seed=42, data_dir=args.data_dir)
+    # Define CIFAR100 dataset handler
+    dataset_handler = data.CIFAR100Handler(batch_size=128,
+                                           validation_split=.2, random_seed=3)
+    train_loader, val_loader, test_loader = dataset_handler.get_dataloaders()
 
     # Initialize model
-    model = get_model(args.model, num_classes=100, pretrained=False, weight_path=args.weight_path)
-    device = torch.device(args.device if torch.cuda.is_available() or 'cpu' not in args.device else 'cpu')
+    model = get_model(args.model, num_classes=100, pretrained=False,
+                      weight_path=args.weight_path)
+    device = torch.device(args.device if torch.cuda.is_available() or \
+                          'cpu' not in args.device else 'cpu')
     model.to(device)
 
     # Train the model
-    train_model(model, train_loader, val_loader, num_epochs=args.num_epochs, learning_rate=args.learning_rate, log_dir=args.log_dir, device=device, use_sam=args.use_sam, rho=args.rho, name_prefix=args.name_prefix)
+    train_model(model, train_loader, val_loader, num_epochs=args.num_epochs,
+                learning_rate=args.learning_rate, log_dir=args.log_dir,
+                device=device, use_sam=args.use_sam, rho=args.rho,
+                name_prefix=args.name_prefix)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a model on CIFAR-100 with TensorBoard logging.")
