@@ -152,7 +152,7 @@ class AmendedDatasetHandler(BaseDatasetHandler):
 
         forget_idx, retained_idx = self.forget_retain_function(
             amended_train_idx, retained_train_idx)
-        train_idx = np.concatenate(amended_train_idx, retained_train_idx)
+        train_idx = np.concatenate((amended_train_idx, retained_train_idx))
 
         train_sampler = SubsetRandomSampler(train_idx)
         valid_sampler = SubsetRandomSampler(val_idx)

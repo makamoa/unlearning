@@ -1,6 +1,7 @@
 import argparse
 import yaml
 import os
+import copy
 import torch
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
@@ -9,6 +10,7 @@ from datetime import datetime
 from models import get_model
 import data
 from optimizer import SAM
+from utils import KLDivLossCustom, NegatedKLDivLoss
 
 def get_current_datetime_string():
     """
@@ -169,15 +171,18 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     print('Training complete')
 
 
-def perform_optimizer_step(model, inputs, labels, loss_fn, optimizer, use_sam):
+def perform_optimizer_step(model, model_teacher, inputs, labels, loss_fn, \
+                           optimizer, use_sam):
     """
     Perform a single optimization step.
 
     Args:
         model: The neural network model.
+        model_teacher: The teacher neural network model.
         inputs: Input batch
         labels: Ground truth labels
-        loss_fn: Loss function.
+        loss_fn: Loss function that accepts model, model_teacher,
+            inputs, labels as parameters
         optimizer: Optimizer.
         use_sam: Boolean to indicate whether to use SAM optimizer.
 
@@ -185,15 +190,15 @@ def perform_optimizer_step(model, inputs, labels, loss_fn, optimizer, use_sam):
         loss_value: Calculated loss value.
     """
     if use_sam:
-        loss_value = loss_fn(model(inputs), labels)
+        loss_value = loss_fn(model, model_teacher, inputs, labels)
         loss_value.backward()
         optimizer.first_step(zero_grad=True)
 
-        loss_value = loss_fn(model(inputs), labels)
+        loss_value = loss_fn(model, model_teacher, inputs, labels)
         loss_value.backward()
         optimizer.second_step(zero_grad=True)
     else:
-        loss_value = loss_fn(model(inputs), labels)
+        loss_value = loss_fn(model, model_teacher, inputs, labels)
         loss_value.backward()
         optimizer.step()
         optimizer.zero_grad()
@@ -202,24 +207,29 @@ def perform_optimizer_step(model, inputs, labels, loss_fn, optimizer, use_sam):
 
 
 def untrain_model(model, retainloader, forgetloader, validloader, num_epochs,
-                  retainloss, forgetloss, log_dir, device, use_sam,
-                  retain_optimizer, forget_optimizer, name_prefix=None):
+                  retainloss_sam, retainloss_rest, forgetloss, log_dir, 
+                  device, retain_optimizer_sam, retain_optimizer_rest, 
+                  forget_optimizer, name_prefix=None) -> None:
     """
     Unlearn a model based on the problem formulation
     `minimize retainloss + forgetloss`. 
 
     Args:
-        model: The neural network model.
+        model: The neural network model that requires unlearning.
         retainloader: DataLoader for the data to be retained.
         forgetloader: DataLoader for the data to be forgotten.
         validloader: DataLoader for the validation data.
         num_epochs: Number of epochs to untrain.
-        retainloss: Loss function for retained data.
+        retainloss_sam: Loss function for retained data, on which SAM
+            (Sharpness-Aware Minimization) is applied. The total retention
+            loss is the sum of retainloss_sam and retainloss_rest.
+        retainloss_rest: Loss function for retained data, on which
+            a standard optimizer is applied.
         forgetloss: Loss function for forgotten data.
         log_dir: Directory to save TensorBoard logs.
         device: Device to run the model on (e.g., 'cpu' or 'cuda').
-        use_sam: Boolean to indicate whether to use SAM optimizer.
-        retain_optimizer: Optimizer for the retain stage.
+        retain_optimizer_sam: SAM optimizer for sam_retain_optimizer
+        retain_optimizer_rest: standard optimizer for retainloss_rest
         forget_optimizer: Optimizer for the forget stage.
         name_prefix: Prefix for naming the log directory and saved model.
     """
@@ -233,34 +243,55 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs,
     # Define loss function for validation
     criterion = nn.CrossEntropyLoss()
 
+    # Define the teacher model
+    model_teacher = copy.deepcopy(model)
+    for param in model_teacher.parameters():
+        param.requires_grad = False
+
+    # Run unlearning epochs
     for epoch in range(num_epochs):
         model.train()
         metrics = initialize_metrics()
 
         # Untraining loop
-        for retain_batch, forget_batch in zip(retainloader, forgetloader):
-            retain_inputs, retain_labels = retain_batch
+        assert len(forgetloader) > 0
+        for retain_batch_sam, retain_batch_rest, forget_batch \
+                in zip(retainloader, retainloader, forgetloader):
+            retain_inputs_sam, retain_labels_sam = retain_batch_sam
+            retain_inputs_rest, retain_labels_rest = retain_batch_rest
             forget_inputs, forget_labels = forget_batch
 
-            retain_inputs, retain_labels = \
-                retain_inputs.to(device), retain_labels.to(device)
+            retain_inputs_sam, retain_labels_sam = \
+                retain_inputs_sam.to(device), retain_labels_sam.to(device)
+            retain_inputs_rest, retain_labels_rest = \
+                retain_inputs_rest.to(device), retain_labels_rest.to(device)            
             forget_inputs, forget_labels = \
                 forget_inputs.to(device), forget_labels.to(device)
-            # retain_optimizer stage
+            # sam_retain_optimizer stage
             retain_loss_value = perform_optimizer_step(model,
-                                                       retain_inputs,
-                                                       retain_labels,
-                                                       retainloss,
-                                                       retain_optimizer,
-                                                       use_sam
+                                                       model_teacher,
+                                                       retain_inputs_sam,
+                                                       retain_labels_sam,
+                                                       retainloss_sam,
+                                                       retain_optimizer_sam,
+                                                       True
                                                        )
+            perform_optimizer_step(model,
+                                   model_teacher,
+                                   retain_inputs_rest,
+                                   retain_labels_rest,
+                                   retainloss_rest,
+                                   retain_optimizer_rest,
+                                   False
+                                   )            
             # forget_optimizer_stage
-            perform_optimizer_step(model, forget_inputs, forget_labels,
-                                   forgetloss, forget_optimizer, use_sam)
+            perform_optimizer_step(model, model_teacher, forget_inputs,
+                                   forget_labels, forgetloss,
+                                   forget_optimizer, False)
 
-            top1, top5 = calculate_accuracy(model(retain_inputs),
-                                            retain_labels, topk=(1, 5))
-            update_metrics(metrics, retain_loss_value.item(), top1, top5,
+            top1, top5 = calculate_accuracy(model(retain_inputs_sam),
+                                            retain_labels_sam, topk=(1, 5))
+            update_metrics(metrics, retain_loss_value, top1, top5,
                            mode='train')
 
         average_metrics(metrics, len(retainloader), mode='train')
@@ -285,7 +316,7 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs,
         log_metrics(writer, metrics, epoch, mode='val')
 
     # Save the final model
-    model_save_path = os.path.join(log_dir, f"{name_prefix}_model.pth")
+    model_save_path = os.path.join(log_dir, f"{name_prefix}_model_untrained.pth")
     torch.save(model.state_dict(), model_save_path)
     print(f'Model saved to {model_save_path}')
 
@@ -317,11 +348,16 @@ def load_config(filename):
 def main(args):
     # Define CIFAR100 dataset handler
     dataset_handler = data.CIFAR100Handler(batch_size=128,
-                                           validation_split=.2, random_seed=3)
-    train_loader, val_loader, test_loader = dataset_handler.get_dataloaders()
-
+                                           validation_split=0.1,
+                                           random_seed=3)
+    data_confuser = data.uniform_confuser(confuse_level=.0, random_seed=1)
+    splitter = data.mix_both_sets(amend_split=1., retain_split=0.2, random_seed=42)
+    confused_dataset_handler = data.AmendedDatasetHandler(dataset_handler, data_confuser, splitter)
+    train_loader, val_loader, test_loader, forget_loader, retain_loader = \
+        confused_dataset_handler.get_dataloaders()
+    
     # Initialize model
-    model = get_model(args.model, num_classes=100, pretrained=False,
+    model = get_model(args.model, num_classes=100, pretrained_weights=None,
                       weight_path=args.weight_path)
     device = torch.device(args.device if torch.cuda.is_available() or \
                           'cpu' not in args.device else 'cpu')
@@ -332,6 +368,23 @@ def main(args):
                 learning_rate=args.learning_rate, log_dir=args.log_dir,
                 device=device, use_sam=args.use_sam, rho=args.rho,
                 name_prefix=args.name_prefix)
+    
+    def sam_loss(model, model_teacher, input, output):
+        return nn.CrossEntropyLoss()(model(input), output)
+    
+    def KL_retain_loss(model, model_teacher, input, output):
+        return KLDivLossCustom()(model(input), model_teacher(input))
+    
+    def KL_forget_loss(model, model_teacher, input, output):
+        return NegatedKLDivLoss()(model(input), model_teacher(input))
+    
+    optimizer_SAM = SAM(model.parameters(), optim.SGD, rho=args.rho, lr=args.sam_lr, momentum=0.9)
+    optimizer_KL_retain = optim.SGD(model.parameters(), lr=args.kl_retain_lr, momentum=0.9)
+    optimizer_forget = optim.SGD(model.parameters(), lr=args.kl_forget_lr, momentum=0.9)
+
+    untrain_model(model, retain_loader, forget_loader, val_loader, args.untrain_num_epochs,
+                  sam_loss, KL_retain_loss, KL_forget_loss, args.log_dir, args.device, 
+                  optimizer_SAM, optimizer_KL_retain, optimizer_forget, args.name_prefix)
 
 
 if __name__ == "__main__":
@@ -348,6 +401,11 @@ if __name__ == "__main__":
     parser.add_argument('--use_sam', action='store_true', help='Whether to use SAM optimizer or not')
     parser.add_argument('--rho', type=float, default=None, help='SAM radius parameter')
     parser.add_argument('--name_prefix', type=str, default=None, help='Define name prefix to store results (same prefix is used for logs, checkpoints, weights, etc).')
+    parser.add_argument('--sam_lr', type=float, default=0.01, help='Learning rate for the SAM base optimizer')
+    parser.add_argument('--kl_retain_lr', type=float, default=0.01, help='Learning rate for the remaining part of the retain loss')
+    parser.add_argument('--kl_forget_lr', type=float, default=0.01, help='Learning rate for the forget loss')
+    parser.add_argument('--untrain_num_epochs', type=int, default=5, help='Number of epochs to untrain for.')
+
 
     args = parser.parse_args()
     if args.name_prefix is None:

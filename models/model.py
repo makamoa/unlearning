@@ -3,24 +3,26 @@ import torch.nn as nn
 import torchvision.models as models
 import timm
 
-def get_model(model_name, num_classes=100, pretrained=True, weight_path=None):
+def get_model(model_name, num_classes=100, pretrained_weights=None, weight_path=None):
+    assert pretrained_weights is None or weight_path is None, \
+        "Specify only one: either 'pretrained_weights' or 'weight_path', not both."
     if model_name == 'resnet18':
-        model = models.resnet18(pretrained=pretrained)
+        model = models.resnet18(weights=pretrained_weights)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
     elif model_name == 'resnet50':
-        model = models.resnet50(pretrained=pretrained)
+        model = models.resnet50(weights=pretrained_weights)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
     elif model_name == 'efficientnet_b0':
-        model = models.efficientnet_b0(pretrained=pretrained)
+        model = models.efficientnet_b0(weights=pretrained_weights)
         model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
     elif model_name == 'efficientnet_b7':
-        model = models.efficientnet_b7(pretrained=pretrained)
+        model = models.efficientnet_b7(pweights=pretrained_weights)
         model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
     elif model_name == 'resnest50d':
-        model = timm.create_model('resnest50d', pretrained=pretrained)
+        model = timm.create_model('resnest50d', weights=pretrained_weights)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
     elif model_name == 'resnest101e':
-        model = timm.create_model('resnest101e', pretrained=pretrained)
+        model = timm.create_model('resnest101e', weights=pretrained_weights)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
     else:
         raise ValueError(f"Model {model_name} not supported.")
