@@ -73,7 +73,6 @@ def print_metrics(metrics, epoch, num_epochs):
           f'Validation Top-1 Accuracy: {metrics["val_top1"]:.2f}%, '
           f'Validation Top-5 Accuracy: {metrics["val_top5"]:.2f}%')
 
-
 def build_name_prefix(args):
     return f'sam_{args.use_sam}_rho_{args.rho}_lr_{args.learning_rate}_' + get_current_datetime_string()
 
@@ -252,11 +251,14 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs,
     for epoch in range(num_epochs):
         model.train()
         metrics = initialize_metrics()
+        n_batches = 0
 
         # Untraining loop
         assert len(forgetloader) > 0
+        assert len(forgetloader) <= len(retainloader)
         for retain_batch_sam, retain_batch_rest, forget_batch \
                 in zip(retainloader, retainloader, forgetloader):
+            n_batches += 1
             retain_inputs_sam, retain_labels_sam = retain_batch_sam
             retain_inputs_rest, retain_labels_rest = retain_batch_rest
             forget_inputs, forget_labels = forget_batch
@@ -269,32 +271,32 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs,
                 forget_inputs.to(device), forget_labels.to(device)
             # sam_retain_optimizer stage
             retain_loss_value = perform_optimizer_step(model,
-                                                       model_teacher,
-                                                       retain_inputs_sam,
-                                                       retain_labels_sam,
-                                                       retainloss_sam,
-                                                       retain_optimizer_sam,
-                                                       True
-                                                       )
+                                                        model_teacher,
+                                                        retain_inputs_sam,
+                                                        retain_labels_sam,
+                                                        retainloss_sam,
+                                                        retain_optimizer_sam,
+                                                        True
+                                                        )
             perform_optimizer_step(model,
-                                   model_teacher,
-                                   retain_inputs_rest,
-                                   retain_labels_rest,
-                                   retainloss_rest,
-                                   retain_optimizer_rest,
-                                   False
-                                   )            
+                                    model_teacher,
+                                    retain_inputs_rest,
+                                    retain_labels_rest,
+                                    retainloss_rest,
+                                    retain_optimizer_rest,
+                                    False
+                                    )            
             # forget_optimizer_stage
             perform_optimizer_step(model, model_teacher, forget_inputs,
                                    forget_labels, forgetloss,
                                    forget_optimizer, False)
-
+            
             top1, top5 = calculate_accuracy(model(retain_inputs_sam),
                                             retain_labels_sam, topk=(1, 5))
             update_metrics(metrics, retain_loss_value, top1, top5,
                            mode='train')
 
-        average_metrics(metrics, len(retainloader), mode='train')
+        average_metrics(metrics, n_batches, mode='train')
 
         # Validation loop
         model.eval()
@@ -368,7 +370,7 @@ def main(args):
                 learning_rate=args.learning_rate, log_dir=args.log_dir,
                 device=device, use_sam=args.use_sam, rho=args.rho,
                 name_prefix=args.name_prefix)
-    
+
     def sam_loss(model, model_teacher, input, output):
         return nn.CrossEntropyLoss()(model(input), output)
     
@@ -401,9 +403,9 @@ if __name__ == "__main__":
     parser.add_argument('--use_sam', action='store_true', help='Whether to use SAM optimizer or not')
     parser.add_argument('--rho', type=float, default=None, help='SAM radius parameter')
     parser.add_argument('--name_prefix', type=str, default=None, help='Define name prefix to store results (same prefix is used for logs, checkpoints, weights, etc).')
-    parser.add_argument('--sam_lr', type=float, default=0.01, help='Learning rate for the SAM base optimizer')
-    parser.add_argument('--kl_retain_lr', type=float, default=0.01, help='Learning rate for the remaining part of the retain loss')
-    parser.add_argument('--kl_forget_lr', type=float, default=0.01, help='Learning rate for the forget loss')
+    parser.add_argument('--sam_lr', type=float, default=0.1, help='Learning rate for the SAM base optimizer')
+    parser.add_argument('--kl_retain_lr', type=float, default=0.1, help='Learning rate for the remaining part of the retain loss')
+    parser.add_argument('--kl_forget_lr', type=float, default=0.1, help='Learning rate for the forget loss')
     parser.add_argument('--untrain_num_epochs', type=int, default=5, help='Number of epochs to untrain for.')
 
 

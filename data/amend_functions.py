@@ -57,7 +57,6 @@ def uniform_confuser(confuse_level=0.1, validation_split=0.2,
         retain_train_idx = np.array([], dtype=int)
         n_classes = len(cls_to_idx.keys())
         for target, indices in cls_to_idx.items():
-            print(indices.dtype)
             np.random.shuffle(indices)
             current_length = len(indices)
             # Define split indices for validation and amendment
