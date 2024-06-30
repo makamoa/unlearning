@@ -1,0 +1,12 @@
+batch_size: 128
+config_file: null
+data_dir: /media/makarem/Data/cifar100
+device: cuda
+learning_rate: 0.001
+log_dir: runs
+model: resnest101e
+name_prefix: sam_False_rho_None_lr_0.001_06-27-17:30:13
+num_epochs: 10
+rho: null
+use_sam: false
+weight_path: /media/makarem/Data/unlearn/logs/sam_True_rho_1.0_lr_0.1_06-27-13:28:58_model.pth
