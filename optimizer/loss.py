@@ -1,6 +1,3 @@
-from typing import Any, Callable, List, Optional, Tuple, Union, Dict
-
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -16,9 +13,7 @@ class KLDivLossCustom(nn.Module):
 
         # KL Divergence loss
         kl_loss = F.kl_div(output_1_soft, output_2_soft, reduction='batchmean')
-
         return kl_loss
-
 
 class NegatedKLDivLoss(nn.Module):
     def __init__(self, temperature=1.0):
@@ -29,3 +24,13 @@ class NegatedKLDivLoss(nn.Module):
         kl_div_loss = self.kl_div_loss_custom(output, output_2)
         negated_kl_div_loss = -1 * kl_div_loss
         return negated_kl_div_loss
+
+def base_loss(model, model_teacher, input, output):
+    return nn.CrossEntropyLoss()(model(input), output)
+
+
+def KL_retain_loss(model, model_teacher, input, output):
+    return KLDivLossCustom()(model(input), model_teacher(input))
+
+def KL_forget_loss(model, model_teacher, input, output):
+    return NegatedKLDivLoss()(model(input), model_teacher(input))
