@@ -233,4 +233,4 @@ dependencies:
       - watchdog==3.0.0
       - wcwidth==0.2.13
       - zipp==3.17.0
-prefix: /home/makarem/anaconda3/envs/torch
+prefix: ./env
