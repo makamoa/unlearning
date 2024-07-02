@@ -4,6 +4,9 @@ import torchvision.transforms as transforms
 from torch.utils.data.sampler import SubsetRandomSampler
 import numpy as np
 
+def get_confused_cifar100(confused_ratio, batch_size=64, validation_split=0.1, forget_split=0.1, num_workers=2, data_dir='./data/cifar100', random_seed=None):
+    pass
+
 def get_cifar100_dataloaders(batch_size=64, validation_split=0.1, forget_split=0.1, num_workers=2, data_dir='./data/cifar100', random_seed=None):
     # Define the transform for the training and testing data
     transform_train = transforms.Compose([
