@@ -29,16 +29,14 @@ class NegatedKLDivLoss(nn.Module):
 def reference_loss(model, model_teacher, input, output, reference=4.2):
     # Define the reference value as a torch tensor
     reference_tensor = torch.tensor(reference, dtype=torch.float32, requires_grad=False)
-
     # Compute the loss as the absolute difference between the reference and the model's output
     loss = torch.abs(nn.CrossEntropyLoss()(model(input), output) - reference_tensor)
-
     return loss
+
 def base_loss(model, model_teacher, input, output):
     # Compute the loss as the absolute difference between the reference and the model's output
     CE = nn.CrossEntropyLoss()(model(input), output)
     return CE
-
 
 def KL_retain_loss(model, model_teacher, input, output):
     return KLDivLossCustom()(model(input), model_teacher(input))

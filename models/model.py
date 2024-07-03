@@ -43,6 +43,40 @@ def get_model(model_name, num_classes=100, pretrained_weights=None, weight_path=
     return model
 
 
+# Define the Comparison Model (Classifier)
+class ComparisonModel(nn.Module):
+    def __init__(self, input_dim, feature_size=None, temperature=1.0, use_linear=True, use_norm=True):
+        super(ComparisonModel, self).__init__()
+        self.temperature = temperature
+        self.use_linear = use_linear
+        self.use_norm = use_norm
+
+        if self.use_linear:
+            self.linear_transform = nn.Linear(input_dim, feature_size, dtype=torch.float32)
+            if self.use_norm:
+                self.normalize = nn.LayerNorm(feature_size, dtype=torch.float32)
+        elif self.use_norm:
+            self.normalize = nn.LayerNorm(input_dim, dtype=torch.float32)
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, v1, v2):
+        if self.use_linear:
+            v1 = self.linear_transform(v1)
+            v2 = self.linear_transform(v2)
+
+        if self.use_norm:
+            v1 = self.normalize(v1)
+            v2 = self.normalize(v2)
+
+        # Compute the inner product (dot product) between the two vectors
+        inner_product = torch.mean(v1 * v2, dim=1, keepdim=True) / self.temperature
+
+        # Apply the sigmoid function
+        output = self.sigmoid(inner_product)
+        return output
+
+
 if __name__ == '__main__':
     model_names = ['resnet18', 'resnet50', 'efficientnet_b0', 'efficientnet_b7', 'resnest50d', 'resnest101e']
     for model_name in model_names:

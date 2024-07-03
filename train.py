@@ -10,7 +10,7 @@ from datetime import datetime
 from models import get_model
 import data
 from data import get_cifar100_dataloaders
-from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss
+from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss, reference_loss
 import torch.optim.lr_scheduler as lr_scheduler
 
 def get_current_datetime_string():
@@ -88,7 +88,6 @@ def build_name_prefix(args):
         old_prefix = os.path.basename(args.weight_path)[:len('_model.pth')]
         prefix = 'untrained_' + old_prefix
     return prefix
-
 
 def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.001, log_dir='runs', device='cuda', use_sam=False, rho=0.05, name_prefix=get_current_datetime_string()):
     """
@@ -183,7 +182,7 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     print('Training complete')
 
 def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10, learning_rate=0.001,
-                  log_dir='runs', device='cuda', name_prefix=get_current_datetime_string(), use_sam=False, rho=0.05) -> None:
+                  log_dir='runs', device='cuda', name_prefix=get_current_datetime_string(), use_sam=False, rho=0.05, reference=4.2) -> None:
     """
     Unlearn a model based on the problem formulation
     `minimize retainloss + forgetloss`. 
@@ -244,36 +243,61 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10,
             retain_inputs, retain_labels = retain_inputs.to(device), retain_labels.to(device)
             forget_inputs, forget_labels = forget_inputs.to(device), forget_labels.to(device)
             # sam_retain_optimizer stage
-            with torch.no_grad():
-                print('I am correct loss', nn.CrossEntropyLoss()(model(retain_inputs), retain_labels))
-            retain_base_loss = perform_optimizer_step(model,
-                                                        model_teacher,
-                                                        retain_inputs,
-                                                        retain_labels,
-                                                        base_loss,
-                                                        base_optimizer,
-                                                        use_sam=use_sam
-                                                        )
-            retain_KL_loss = perform_optimizer_step(model,
-                                    model_teacher,
-                                    retain_inputs,
-                                    retain_labels,
-                                    KL_retain_loss,
-                                    KL_retain_optimizer,
-                                    False
-                                    )
+            # with torch.no_grad():
+            #     print('I am correct loss', nn.CrossEntropyLoss()(model(retain_inputs), retain_labels))
+            retain_outputs = model(retain_inputs)
+            forget_outputs = model(forget_inputs)
+            reference_tensor = torch.tensor(reference, dtype=torch.float32, requires_grad=False)
+            retain_base_loss = nn.CrossEntropyLoss()(retain_outputs, retain_labels)
+            forget_reference_loss = torch.abs(nn.CrossEntropyLoss()(forget_outputs, forget_labels) - reference_tensor)
+            loss = retain_base_loss + forget_reference_loss / reference
+            if use_sam:
+                # First forward-backward pass
+                loss.backward()
+                base_optimizer.first_step(zero_grad=True)
+                retain_outputs = model(retain_inputs)
+                forget_outputs = model(forget_inputs)
+                reference_tensor = torch.tensor(reference, dtype=torch.float32, requires_grad=False)
+                retain_base_loss = nn.CrossEntropyLoss()(retain_outputs, retain_labels)
+                forget_reference_loss = torch.abs(
+                    nn.CrossEntropyLoss()(forget_outputs, forget_labels) - reference_tensor)
+                loss = retain_base_loss + forget_reference_loss / reference
+                # Second forward-backward pass
+                loss.backward()
+                base_optimizer.second_step(zero_grad=True)
+            else:
+                # Standard forward-backward pass
+                loss.backward()
+                base_optimizer.step()
+                base_optimizer.zero_grad()
+            # retain_base_loss = perform_optimizer_step(model,
+            #                                             model_teacher,
+            #                                             retain_inputs,
+            #                                             retain_labels,
+            #                                             base_loss,
+            #                                             base_optimizer,
+            #                                             use_sam=use_sam
+            #                                             )
+            # retain_KL_loss = perform_optimizer_step(model,
+            #                         model_teacher,
+            #                         retain_inputs,
+            #                         retain_labels,
+            #                         KL_retain_loss,
+            #                         KL_retain_optimizer,
+            #                         False
+            #                         )
             # forget_optimizer_stage
-            forget_KL_loss = perform_optimizer_step(model, model_teacher, forget_inputs,
-                                   forget_labels, KL_forget_loss,
-                                   KL_forget_optimizer, False)
+            # forget_KL_loss = perform_optimizer_step(model, model_teacher, forget_inputs,
+            #                        forget_labels, reference_loss,
+            #                        KL_forget_optimizer, False)
 
             top1, top5 = calculate_accuracy(model(retain_inputs),
                                             retain_labels, topk=(1, 5))
-            update_metrics(metrics_retain, retain_KL_loss, top1, top5,
+            update_metrics(metrics_retain, retain_base_loss, top1, top5,
                            mode='train')
             top1, top5 = calculate_accuracy(model(forget_inputs),
                                             forget_labels, topk=(1, 5))
-            update_metrics(metrics_forget, -forget_KL_loss, top1, top5,
+            update_metrics(metrics_forget, forget_reference_loss, top1, top5,
                            mode='train')
 
         average_metrics(metrics_retain, n_batches, mode='train')
@@ -291,7 +315,6 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10,
                 loss = criterion(outputs, labels)
                 top1, top5 = calculate_accuracy(outputs, labels, topk=(1, 5))
                 update_metrics(metrics_retain, loss, top1, top5, mode='val')
-                print('I am correct VAL loss', nn.CrossEntropyLoss()(model(inputs), labels))
         average_metrics(metrics_retain, len(validloader), mode='val')
         print('Retain Set Performance')
         print_metrics(metrics_retain, epoch, num_epochs)
@@ -317,7 +340,6 @@ def perform_optimizer_step(model, model_teacher, inputs, labels, loss_fn, \
                            optimizer, use_sam):
     """
     Perform a single optimization step.
-
     Args:
         model: The neural network model.
         model_teacher: The teacher neural network model.
@@ -371,7 +393,7 @@ def main(args):
     train_loader, val_loader, test_loader, retain_loader, forget_loader = get_cifar100_dataloaders(batch_size=args.batch_size, validation_split=0.1,
                                                                      num_workers=2, random_seed=42,
                                                                      data_dir=args.data_dir)
-    
+
     # Initialize model
     model = get_model(args.model, num_classes=100, pretrained_weights=None,
                       weight_path=args.weight_path)
@@ -387,7 +409,7 @@ def main(args):
                     name_prefix=args.name_prefix)
     else:
         untrain_model(model, retain_loader, forget_loader, val_loader, num_epochs=args.untrain_num_epochs,
-                      log_dir=args.log_dir, device=args.device, name_prefix=args.name_prefix, use_sam=args.use_sam)
+                      log_dir=args.log_dir, device=args.device, name_prefix=args.name_prefix, use_sam=args.use_sam, reference=args.reference)
 
 
 if __name__ == "__main__":
@@ -411,6 +433,7 @@ if __name__ == "__main__":
     parser.add_argument('--kl_retain_lr', type=float, default=1e-10, help='Learning rate for the remaining part of the retain loss')
     parser.add_argument('--kl_forget_lr', type=float, default=1e-10, help='Learning rate for the forget loss')
     parser.add_argument('--untrain_num_epochs', type=int, default=5, help='Number of epochs to untrain for.')
+    parser.add_argument('--reference', type=float, default=4.2, help='Loss reference for unlearning')
 
     args = parser.parse_args()
     if args.untrain:
