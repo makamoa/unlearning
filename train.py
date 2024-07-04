@@ -13,6 +13,7 @@ from data import get_cifar100_dataloaders, CorrespondingLoaders
 from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss, inverse_KL_forget_loss
 import torch.optim.lr_scheduler as lr_scheduler
 
+
 def get_current_datetime_string():
     """
     Returns the current date and time as a formatted string.
@@ -50,34 +51,42 @@ def initialize_metrics(mode='train'):
     else:
         raise ValueError(f'Unknown mode: {mode}')
 
+
 def update_metrics(metrics, loss, top1, top5, mode='train'):
     metrics[f'{mode}_loss'] += loss.item()
     metrics[f'{mode}_top1'] += top1.item()
     metrics[f'{mode}_top5'] += top5.item()
+
 
 def average_metrics(metrics, dataset_size, mode='train'):
     metrics[f'{mode}_loss'] /= dataset_size
     metrics[f'{mode}_top1'] /= dataset_size
     metrics[f'{mode}_top5'] /= dataset_size
 
+
 def log_metrics(writer, metrics, epoch, mode='train'):
     writer.add_scalar(f'Loss/{mode}', metrics[f'{mode}_loss'], epoch)
     writer.add_scalar(f'Accuracy/{mode}_top1', metrics[f'{mode}_top1'], epoch)
     writer.add_scalar(f'Accuracy/{mode}_top5', metrics[f'{mode}_top5'], epoch)
 
+
 def log_metrics_unlearn(writer, metrics_retain, metrics_forget, epoch, mode='train'):
-    writer.add_scalars(f'Loss/{mode}', {'retain' : metrics_retain[f'{mode}_loss']}, epoch)
-    writer.add_scalars(f'Accuracy/{mode}_top1', {'retain' : metrics_retain[f'{mode}_top1'], 'forget' : metrics_forget[f'{mode}_top1']}, epoch)
-    writer.add_scalars(f'Accuracy/{mode}_top5', {'retain' : metrics_retain[f'{mode}_top5'], 'forget' : metrics_forget[f'{mode}_top5']}, epoch)
+    writer.add_scalars(f'Loss/{mode}', {'retain': metrics_retain[f'{mode}_loss']}, epoch)
+    writer.add_scalars(f'Accuracy/{mode}_top1',
+                       {'retain': metrics_retain[f'{mode}_top1'], 'forget': metrics_forget[f'{mode}_top1']}, epoch)
+    writer.add_scalars(f'Accuracy/{mode}_top5',
+                       {'retain': metrics_retain[f'{mode}_top5'], 'forget': metrics_forget[f'{mode}_top5']}, epoch)
+
 
 def print_metrics(metrics, epoch, num_epochs):
-    print(f'Epoch {epoch+1}/{num_epochs}, '
+    print(f'Epoch {epoch + 1}/{num_epochs}, '
           f'Train Loss: {metrics["train_loss"]:.4f}, '
           f'Train Top-1 Accuracy: {metrics["train_top1"]:.2f}%, '
           f'Train Top-5 Accuracy: {metrics["train_top5"]:.2f}%, '
           f'Validation Loss: {metrics["val_loss"]:.4f}, '
           f'Validation Top-1 Accuracy: {metrics["val_top1"]:.2f}%, '
           f'Validation Top-5 Accuracy: {metrics["val_top5"]:.2f}%')
+
 
 def build_name_prefix(args):
     prefix = ''
@@ -89,7 +98,8 @@ def build_name_prefix(args):
     return prefix
 
 
-def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.001, log_dir='runs', device='cuda', use_sam=False, rho=0.05, name_prefix=get_current_datetime_string()):
+def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.001, log_dir='runs', device='cuda',
+                use_sam=False, rho=0.05, name_prefix=get_current_datetime_string()):
     """
     Trains the given model on the provided training data and evaluates it on the validation data.
 
@@ -181,11 +191,13 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     writer.close()
     print('Training complete')
 
+
 def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10, learning_rate=0.001,
-                  log_dir='runs', device='cuda', name_prefix=get_current_datetime_string(), use_sam=False, rho=0.05) -> None:
+                  log_dir='runs', device='cuda', name_prefix=get_current_datetime_string(), use_sam=False,
+                  rho=0.05) -> None:
     """
     Unlearn a model based on the problem formulation
-    `minimize retainloss + forgetloss`. 
+    `minimize retainloss + forgetloss`.
 
     Args:
         model: The neural network model that requires unlearning.
@@ -242,26 +254,26 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10,
             forget_inputs, forget_labels = forget_inputs.to(device), forget_labels.to(device)
             # sam_retain_optimizer stage
             retain_loss_value = perform_optimizer_step(model,
-                                                        model_teacher,
-                                                        retain_inputs,
-                                                        retain_labels,
-                                                        base_loss,
-                                                        base_optimizer,
-                                                        use_sam=use_sam
-                                                        )
+                                                       model_teacher,
+                                                       retain_inputs,
+                                                       retain_labels,
+                                                       base_loss,
+                                                       base_optimizer,
+                                                       use_sam=use_sam
+                                                       )
             perform_optimizer_step(model,
-                                    model_teacher,
-                                    retain_inputs,
-                                    retain_labels,
-                                    KL_retain_loss,
-                                    KL_retain_optimizer,
-                                    False
-                                    )
+                                   model_teacher,
+                                   retain_inputs,
+                                   retain_labels,
+                                   KL_retain_loss,
+                                   KL_retain_optimizer,
+                                   False
+                                   )
             # forget_optimizer_stage
             perform_optimizer_step(model, model_teacher, forget_inputs,
                                    forget_labels, inverse_KL_forget_loss,
                                    KL_forget_optimizer, False)
-            
+
             top1, top5 = calculate_accuracy(model(retain_inputs),
                                             retain_labels, topk=(1, 5))
             update_metrics(metrics_retain, retain_loss_value, top1, top5,
@@ -306,6 +318,7 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10,
     writer.close()
     print('Unlearning complete')
 
+
 def perform_optimizer_step(model, model_teacher, inputs, labels, loss_fn, \
                            optimizer, use_sam):
     """
@@ -340,6 +353,7 @@ def perform_optimizer_step(model, model_teacher, inputs, labels, loss_fn, \
 
     return loss_value
 
+
 def save_config(config, filename):
     with open(filename, 'w') as f:
         yaml.dump(config, f)
@@ -369,7 +383,7 @@ def main(args):
     model = get_model(args.model, num_classes=100, pretrained_weights=None,
                       weight_path=args.weight_path)
     device = torch.device(args.device if torch.cuda.is_available() or \
-                          'cpu' not in args.device else 'cpu')
+                                         'cpu' not in args.device else 'cpu')
     model.to(device)
 
     # Train the model
@@ -394,14 +408,16 @@ if __name__ == "__main__":
     parser.add_argument('--config_file', type=str, help='Path to configuration file to load.')
     parser.add_argument('--model', type=str, default='resnet18', help='Model architecture to use.')
     parser.add_argument('--weight_path', type=str, help='Path to model weights file.')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., "cpu", "cuda", "cuda:0", "cuda:1").')
+    parser.add_argument('--device', type=str, default='cuda',
+                        help='Device to use for training (e.g., "cpu", "cuda", "cuda:0", "cuda:1").')
     parser.add_argument('--use_sam', action='store_true', help='Whether to use SAM optimizer or not')
     parser.add_argument('--rho', type=float, default=None, help='SAM radius parameter')
     parser.add_argument('--name_prefix', type=str, default=None,
                         help='Define name prefix to store results (same prefix is used for logs, checkpoints, weights, etc).')
     parser.add_argument('--untrain', type=bool, default=False, help='SAM radius parameter')
     parser.add_argument('--sam_lr', type=float, default=0.1, help='Learning rate for the SAM base optimizer')
-    parser.add_argument('--kl_retain_lr', type=float, default=0.1, help='Learning rate for the remaining part of the retain loss')
+    parser.add_argument('--kl_retain_lr', type=float, default=0.1,
+                        help='Learning rate for the remaining part of the retain loss')
     parser.add_argument('--kl_forget_lr', type=float, default=0.1, help='Learning rate for the forget loss')
     parser.add_argument('--untrain_num_epochs', type=int, default=5, help='Number of epochs to untrain for.')
 

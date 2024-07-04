@@ -69,18 +69,17 @@ def test_model(model, test_loader, device='cuda'):
 
 def main(args):
     # Load CIFAR-100 dataset
-    train_loader, _, test_loader = get_cifar100_dataloaders(batch_size=args.batch_size, validation_split=0.1, num_workers=2,
+    train_loader, _, test_loader, _, _ = get_cifar100_dataloaders(batch_size=args.batch_size, validation_split=0.1, num_workers=2,
                                                  random_seed=42, data_dir=args.data_dir)
-
     # Initialize model
-    model = get_model(args.model, num_classes=100, pretrained=False)
+    model = get_model(args.model, num_classes=100, pretrained_weights=False)
     device = torch.device(args.device if torch.cuda.is_available() or 'cpu' not in args.device else 'cpu')
     model.to(device)
 
     # Load the saved model weights
     model.load_state_dict(torch.load(args.weight_path))
     # Load the saved model weights
-    dummy_model = get_model(args.model, num_classes=100, pretrained=False)
+    dummy_model = get_model(args.model, num_classes=100, pretrained_weights=False)
     device = torch.device(args.device if torch.cuda.is_available() or 'cpu' not in args.device else 'cpu')
     dummy_model.to(device)
 
