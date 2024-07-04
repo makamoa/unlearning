@@ -204,14 +204,14 @@ def main(args):
         num_workers=2, random_seed=42,
         data_dir=args.data_dir)
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    classifier = ComparisonModel(input_dim=100, feature_size=64, temperature=0.1, use_linear=False, use_norm=True).to(device)
+    classifier = ComparisonModel(input_dim=100, feature_size=64, temperature=0.1, use_linear=False, use_norm=False).to(device)
     # Train the models
     model = get_model(args.model, num_classes=100, pretrained_weights=None,
                       weight_path=args.weight_path)
     teacher = copy.deepcopy(model)
     for param in teacher.parameters():
         param.requires_grad = False
-    student =  get_model(args.model, num_classes=100, pretrained_weights=None)
+    student =  get_model(args.model, num_classes=100, pretrained_weights=None, weight_path=args.weight_path_student)
     classifier.to(device)
     student.to(device)
     teacher.to(device)
@@ -233,6 +233,7 @@ if __name__ == "__main__":
     parser.add_argument('--name_prefix', type=str, default=None,
                         help='Define name prefix to store results (same prefix is used for logs, checkpoints, weights, etc).')
     parser.add_argument('--weight_path', type=str, help='Path to model weights file.')
+    parser.add_argument('--weight_path_student', type=str, default=None, help='Path to model weights file to initialize student model.')
     parser.add_argument('--model', type=str, default='resnet18', help='Model architecture to use.')
 
     args = parser.parse_args()
