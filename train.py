@@ -9,8 +9,8 @@ import torch.nn as nn
 from datetime import datetime
 from models import get_model
 import data
-from data import get_cifar100_dataloaders
-from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss
+from data import get_cifar100_dataloaders, CorrespondingLoaders
+from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss, inverse_KL_forget_loss
 import torch.optim.lr_scheduler as lr_scheduler
 
 def get_current_datetime_string():
@@ -259,7 +259,7 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10,
                                     )
             # forget_optimizer_stage
             perform_optimizer_step(model, model_teacher, forget_inputs,
-                                   forget_labels, KL_forget_loss,
+                                   forget_labels, inverse_KL_forget_loss,
                                    KL_forget_optimizer, False)
             
             top1, top5 = calculate_accuracy(model(retain_inputs),
@@ -352,19 +352,19 @@ def load_config(filename):
 
 def main(args):
     # Define CIFAR100 dataset handler
-    dataset_handler = data.CIFAR100Handler(batch_size=args.batch_size,
-                                           validation_split=0.1,
-                                           random_seed=1,
-                                           data_dir=args.data_dir)
-    data_confuser = data.uniform_confuser(confuse_level=.0, random_seed=42)
-    splitter = data.mix_both_sets(amend_split=1., retain_split=0.1, random_seed=42)
-    confused_dataset_handler = data.AmendedDatasetHandler(dataset_handler, data_confuser, splitter)
-    train_loader, val_loader, test_loader, forget_loader, retain_loader = \
-        confused_dataset_handler.get_dataloaders()
-    # train_loader, val_loader, test_loader, retain_loader, forget_loader = get_cifar100_dataloaders(batch_size=args.batch_size, validation_split=0.1,
-    #                                                                  num_workers=2, random_seed=42,
-    #                                                                  data_dir=args.data_dir)
-    
+    # dataset_handler = data.CIFAR100Handler(batch_size=args.batch_size,
+    #                                        validation_split=0.1,
+    #                                        random_seed=42,
+    #                                        data_dir=args.data_dir)
+    # data_confuser = data.uniform_confuser(confuse_level=.0, random_seed=42)
+    # splitter = data.mix_both_sets(amend_split=1., retain_split=0.1, random_seed=42)
+    # confused_dataset_handler = data.AmendedDatasetHandler(dataset_handler, data_confuser, splitter, class_wise_corr=True)
+    # train_loader, val_loader, test_loader, forget_loader, retain_loader, unseen_loader = \
+    #     confused_dataset_handler.get_dataloaders()
+    train_loader, val_loader, test_loader, retain_loader, forget_loader = get_cifar100_dataloaders(batch_size=args.batch_size, validation_split=0.1,
+                                                                     num_workers=2, random_seed=42,
+                                                                     data_dir=args.data_dir)
+    forget_loader, val_loader = CorrespondingLoaders(forget_loader, val_loader).get_loaders()
     # Initialize model
     model = get_model(args.model, num_classes=100, pretrained_weights=None,
                       weight_path=args.weight_path)

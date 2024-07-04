@@ -12,10 +12,10 @@ class SO_SAM(torch.optim.Optimizer):
         rho (float): The `rho` parameter of SAM.
         precision (float): The precision used for estimating
             the Hessian-gradient product.
-        kwargs: Additional hyperparameters for the `base_optimizer`.
+        kwargs: Additional hyperparameters for the `base_optimized`.
     """
     def __init__(self, params, base_optimizer, rho=0.05, 
-                 precision=1e-10, **kwargs):
+                 precision=1e-4, **kwargs):
         assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
 
         defaults = dict(rho=rho, precision=precision, **kwargs)
@@ -24,18 +24,27 @@ class SO_SAM(torch.optim.Optimizer):
         self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
         self.param_groups = self.base_optimizer.param_groups
         self.defaults.update(self.base_optimizer.defaults)
+    
+    def _init_group(self, group):
+        for p in group["params"]:
+            state = self.state[p]
+            if len(state) == 0:
+                state["first_grad"] = torch.zeros_like(p)
+                state["second_grad"] = torch.zeros_like(p)
+                state["old_p"] = torch.zeros_like(p)
+                state["first_grad_norm"] = torch.tensor(0.0, device=p.device)
 
     @torch.no_grad()
     def first_step(self, zero_grad=True):
         grad_norm = self._grad_norm()
-        self.state['first_grad_norm'] = grad_norm
         for group in self.param_groups:
             scale = group["rho"] / (grad_norm + 1e-12)
-
+            self._init_group(group)
             for p in group["params"]:
                 if p.grad is None: continue
-                self.state[p]["old_p"] = p.clone().detach()
-                self.state[p]["first_grad"] = p.grad.clone().detach()
+                self.state[p]["old_p"].copy_(p)
+                self.state[p]["first_grad"].copy_(p.grad)
+                self.state[p]["first_grad_norm"].copy_(grad_norm)
                 e_w = p.grad * scale.to(p).type_as(p)
                 p.add_(e_w)
 
@@ -45,10 +54,10 @@ class SO_SAM(torch.optim.Optimizer):
     def second_step(self, zero_grad=True):
         for group in self.param_groups:
             scale = group["precision"]
-
+            self._init_group(group)
             for p in group["params"]:
                 if p.grad is None: continue
-                self.state[p]["second_grad"] = p.grad.clone().detach()
+                self.state[p]["second_grad"].copy_(p.grad)
                 p.copy_(self.state[p]["old_p"] + p.grad * scale)
 
         if zero_grad: self.zero_grad()
@@ -58,23 +67,24 @@ class SO_SAM(torch.optim.Optimizer):
         device = self.param_groups[0]["params"][0].device
         scalar_product = torch.zeros(1, device=device)
         for group in self.param_groups:
-            scale = group["rho"] / \
-                (self.state['first_grad_norm'] * group["precision"] + 1e-18)
+            scale = group["rho"] / group["precision"]
+            self._init_group(group)
             for p in group["params"]:
                 if p.grad is None: continue
+                p_scale = scale / (self.state[p]["first_grad_norm"] + 1e-10)
                 hessian_grad = p.grad - self.state[p]["first_grad"]
                 scalar_product.add_(
                     torch.dot(
                         hessian_grad.view(-1, 1).squeeze(),
                         self.state[p]["first_grad"].view(-1, 1).squeeze()))
                 p.grad.copy_(self.state[p]["second_grad"] + \
-                    scale.to(p) * hessian_grad)
+                    p_scale.to(p) * hessian_grad)
         for group in self.param_groups:
-            scale = group["rho"] * scalar_product / \
-                (self.state['first_grad_norm'].pow(3) * group["precision"] + 1e-18)
+            scale = group["rho"] * scalar_product / group["precision"]
             for p in group["params"]:
+                p_scale = scale / (self.state[p]["first_grad_norm"] + 1e-10)
                 if p.grad is None: continue
-                p.grad.sub_(self.state[p]["first_grad"] * scale.to(p))
+                p.grad.sub_(self.state[p]["first_grad"] * p_scale.to(p))
                 p.copy_(self.state[p]["old_p"])
 
         self.base_optimizer.step()
