@@ -10,7 +10,7 @@ from datetime import datetime
 from models import get_model
 import data
 from data import get_cifar100_dataloaders, CorrespondingLoaders
-from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss, inverse_KL_forget_loss
+from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss, inverse_KL_forget_loss, NegativeCrossEntropyLoss
 import torch.optim.lr_scheduler as lr_scheduler
 
 
@@ -192,7 +192,7 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     print('Training complete')
 
 
-def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10, learning_rate=0.001,
+def untrain_model(model, retainloader, forgetloader, validloader, retain_optimizer = None, forget_optimizer=None, retain_loss=None, forget_loss=None, num_epochs=10, learning_rate=0.001,
                   log_dir='runs', device='cuda', name_prefix=get_current_datetime_string(), use_sam=False,
                   rho=0.05) -> None:
     """
@@ -228,8 +228,6 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10,
         base_optimizer = SAM(model.parameters(), optim.SGD, lr=learning_rate, momentum=0.9, rho=rho)
     else:
         base_optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
-    KL_retain_optimizer = optim.SGD(model.parameters(), lr=args.kl_retain_lr, momentum=0.9)
-    KL_forget_optimizer = optim.SGD(model.parameters(), lr=args.kl_forget_lr, momentum=0.9)
     # Define the teacher model
     model_teacher = copy.deepcopy(model)
     for param in model_teacher.parameters():
@@ -253,7 +251,7 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10,
             retain_inputs, retain_labels = retain_inputs.to(device), retain_labels.to(device)
             forget_inputs, forget_labels = forget_inputs.to(device), forget_labels.to(device)
             # sam_retain_optimizer stage
-            retain_loss_value = perform_optimizer_step(model,
+            base_loss_value = perform_optimizer_step(model,
                                                        model_teacher,
                                                        retain_inputs,
                                                        retain_labels,
@@ -261,26 +259,29 @@ def untrain_model(model, retainloader, forgetloader, validloader, num_epochs=10,
                                                        base_optimizer,
                                                        use_sam=use_sam
                                                        )
-            perform_optimizer_step(model,
-                                   model_teacher,
-                                   retain_inputs,
-                                   retain_labels,
-                                   KL_retain_loss,
-                                   KL_retain_optimizer,
-                                   False
-                                   )
-            # forget_optimizer_stage
-            perform_optimizer_step(model, model_teacher, forget_inputs,
-                                   forget_labels, inverse_KL_forget_loss,
-                                   KL_forget_optimizer, False)
-
+            if retain_optimizer is not None:
+                perform_optimizer_step(model,
+                                       model_teacher,
+                                       retain_inputs,
+                                       retain_labels,
+                                       retain_loss,
+                                       retain_optimizer,
+                                       False
+                                       )
+            # forget_optimizer_stag
+            if forget_optimizer is not None:
+                forget_loss_value = perform_optimizer_step(model, model_teacher, forget_inputs,
+                                       forget_labels, forget_loss,
+                                       forget_optimizer, False)
+            else:
+                forget_loss_value = 0
             top1, top5 = calculate_accuracy(model(retain_inputs),
                                             retain_labels, topk=(1, 5))
-            update_metrics(metrics_retain, retain_loss_value, top1, top5,
+            update_metrics(metrics_retain, base_loss_value, top1, top5,
                            mode='train')
             top1, top5 = calculate_accuracy(model(forget_inputs),
                                             forget_labels, topk=(1, 5))
-            update_metrics(metrics_forget, retain_loss_value, top1, top5,
+            update_metrics(metrics_forget, forget_loss_value, top1, top5,
                            mode='train')
 
         average_metrics(metrics_retain, n_batches, mode='train')
@@ -393,8 +394,19 @@ def main(args):
                     device=device, use_sam=args.use_sam, rho=args.rho,
                     name_prefix=args.name_prefix)
     else:
-        untrain_model(model, retain_loader, forget_loader, val_loader, num_epochs=args.untrain_num_epochs,
-                      log_dir=args.log_dir, device=args.device, name_prefix=args.name_prefix, use_sam=args.use_sam)
+        if args.SCRUB == True:
+            retain_optimizer = optim.SGD(model.parameters(), lr=args.kl_retain_lr, momentum=0.9)
+            forget_optimizer = optim.SGD(model.parameters(), lr=args.kl_forget_lr, momentum=0.9)
+            retain_loss = KL_retain_loss
+            forget_loss = KL_forget_loss
+        else:
+            retain_optimizer = None
+            forget_optimizer = optim.SGD(model.parameters(), lr=args.kl_forget_lr, momentum=0.9)
+            retain_loss = None
+            forget_loss = NegativeCrossEntropyLoss
+        untrain_model(model, retain_loader, forget_loader, val_loader, retain_optimizer=retain_optimizer, forget_optimizer=forget_optimizer,
+                      retain_loss=retain_loss, forget_loss=forget_loss, num_epochs=args.untrain_num_epochs, log_dir=args.log_dir, device=args.device,
+                      name_prefix=args.name_prefix, use_sam=args.use_sam)
 
 
 if __name__ == "__main__":
@@ -420,6 +432,7 @@ if __name__ == "__main__":
                         help='Learning rate for the remaining part of the retain loss')
     parser.add_argument('--kl_forget_lr', type=float, default=0.1, help='Learning rate for the forget loss')
     parser.add_argument('--untrain_num_epochs', type=int, default=5, help='Number of epochs to untrain for.')
+    parser.add_argument('--SCRUB', type=bool, default=False, help='Use SCRUB optimizer or not for untraining')
 
     args = parser.parse_args()
     if args.untrain:
