@@ -15,6 +15,15 @@ class KLDivLossCustom(nn.Module):
         kl_loss = F.kl_div(output_1_soft, output_2_soft, reduction='batchmean')
         return kl_loss
 
+class NegativeCrossEntropyLoss(nn.Module):
+    def __init__(self):
+        super(NegativeCrossEntropyLoss, self).__init__()
+        self.criterion = nn.CrossEntropyLoss()
+
+    def forward(self, inputs, targets):
+        loss = self.criterion(inputs, targets)
+        return -loss
+
 class NegatedKLDivLoss(nn.Module):
     def __init__(self, temperature=1.0):
         super(NegatedKLDivLoss, self).__init__()
