@@ -71,13 +71,15 @@ def get_cifar100_dataloaders(batch_size=64, validation_split=0.1, forget_split=0
     return trainloader, validloader, testloader, retainloader, forgetloader
 
 class CorrespondingLoaders(CorrespondingSubsetRandomSamplers):
-    def __init__(self, forget_loader, val_loader):
+    def __init__(self, forget_loader, val_loader, seed=42):
         super().__init__(
             independent_indices=forget_loader.sampler.indices,
             dependent_indices=val_loader.sampler.indices,
             dataset=val_loader.dataset,
-            seed=42
+            seed=seed
         )
+        print(forget_loader.dataset)
+        print(val_loader.dataset)
         assert forget_loader.dataset == val_loader.dataset
         self.forget_loader = forget_loader
         self.val_loader = val_loader
