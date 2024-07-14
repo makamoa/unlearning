@@ -10,7 +10,7 @@ from datetime import datetime
 from models import get_model
 import data
 from data import get_cifar100_dataloaders, CorrespondingLoaders
-from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss, inverse_KL_forget_loss, NegativeCrossEntropyLoss
+from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss, inverse_KL_forget_loss, NegativeCrossEntropyLoss, negative_CE_loss
 import torch.optim.lr_scheduler as lr_scheduler
 
 
@@ -403,7 +403,7 @@ def main(args):
             retain_optimizer = None
             forget_optimizer = optim.SGD(model.parameters(), lr=args.kl_forget_lr, momentum=0.9)
             retain_loss = None
-            forget_loss = NegativeCrossEntropyLoss
+            forget_loss = negative_CE_loss
         untrain_model(model, retain_loader, forget_loader, val_loader, retain_optimizer=retain_optimizer, forget_optimizer=forget_optimizer,
                       retain_loss=retain_loss, forget_loss=forget_loss, num_epochs=args.untrain_num_epochs, log_dir=args.log_dir, device=args.device,
                       name_prefix=args.name_prefix, use_sam=args.use_sam)

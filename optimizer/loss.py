@@ -61,6 +61,9 @@ def base_loss(model, model_teacher, input, output):
     CE = nn.CrossEntropyLoss()(model(input), output)
     return CE
 
+def negative_CE_loss(model, model_teacher, input, output):
+    return NegativeCrossEntropyLoss()(model(input), output)
+
 def KL_retain_loss(model, model_teacher, input, output):
     return KLDivLossCustom()(model(input), model_teacher(input))
 
