@@ -9,16 +9,22 @@ import torch.nn as nn
 from datetime import datetime
 from models import get_model
 import data
+from helper_functions import get_current_datetime_string, initialize_metrics, \
+    update_metrics, update_additional_metrics, average_metrics, \
+    average_additional_metrics, log_metrics, log_metrics_unlearn, \
+    print_metrics, build_name_prefix, initialize_additional_metrics, \
+    log_additional_metrics
 
+def _grad_norm(model):
+    total_norm = 0.0
 
-def get_current_datetime_string():
-    """
-    Returns the current date and time as a formatted string.
-    Format: 'MM-DD-HH:MM:SS'
-    """
-    now = datetime.now()
-    return now.strftime("%m-%d-%H:%M:%S")
+    for param in model.parameters():
+        if param.grad is not None:
+            param_norm = torch.norm(param.grad, 2.)
+            total_norm += param_norm.item() ** 2.
 
+    total_norm = total_norm ** .5
+    return total_norm    
 
 def calculate_accuracy(output, target, topk=(1,)):
     maxk = max(topk)
@@ -33,67 +39,6 @@ def calculate_accuracy(output, target, topk=(1,)):
         correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
-
-
-def initialize_metrics(mode='train'):
-    if mode == 'train':
-        return {
-            'train_loss': 0.0,
-            'train_top1': 0.0,
-            'train_top5': 0.0,
-            'val_loss': 0.0,
-            'val_top1': 0.0,
-            'val_top5': 0.0
-        }
-    else:
-        raise ValueError(f'Unknown mode: {mode}')
-
-
-def update_metrics(metrics, loss, top1, top5, mode='train'):
-    metrics[f'{mode}_loss'] += loss.item()
-    metrics[f'{mode}_top1'] += top1.item()
-    metrics[f'{mode}_top5'] += top5.item()
-
-
-def average_metrics(metrics, dataset_size, mode='train'):
-    metrics[f'{mode}_loss'] /= dataset_size
-    metrics[f'{mode}_top1'] /= dataset_size
-    metrics[f'{mode}_top5'] /= dataset_size
-
-
-def log_metrics(writer, metrics, epoch, mode='train'):
-    writer.add_scalar(f'Loss/{mode}', metrics[f'{mode}_loss'], epoch)
-    writer.add_scalar(f'Accuracy/{mode}_top1', metrics[f'{mode}_top1'], epoch)
-    writer.add_scalar(f'Accuracy/{mode}_top5', metrics[f'{mode}_top5'], epoch)
-
-
-def log_metrics_unlearn(writer, metrics_retain, metrics_forget, epoch, mode='train'):
-    writer.add_scalars(f'Loss/{mode}', {'retain': metrics_retain[f'{mode}_loss']}, epoch)
-    writer.add_scalars(f'Accuracy/{mode}_top1',
-                       {'retain': metrics_retain[f'{mode}_top1'], 'forget': metrics_forget[f'{mode}_top1']}, epoch)
-    writer.add_scalars(f'Accuracy/{mode}_top5',
-                       {'retain': metrics_retain[f'{mode}_top5'], 'forget': metrics_forget[f'{mode}_top5']}, epoch)
-
-
-def print_metrics(metrics, epoch, num_epochs):
-    print(f'Epoch {epoch + 1}/{num_epochs}, '
-          f'Train Loss: {metrics["train_loss"]:.4f}, '
-          f'Train Top-1 Accuracy: {metrics["train_top1"]:.2f}%, '
-          f'Train Top-5 Accuracy: {metrics["train_top5"]:.2f}%, '
-          f'Validation Loss: {metrics["val_loss"]:.4f}, '
-          f'Validation Top-1 Accuracy: {metrics["val_top1"]:.2f}%, '
-          f'Validation Top-5 Accuracy: {metrics["val_top5"]:.2f}%')
-
-
-def build_name_prefix(args):
-    prefix = ''
-    if not args.untrain:
-        prefix = f'model_{args.model}_lr_{args.learning_rate}_' + get_current_datetime_string()
-    else:
-        old_prefix = os.path.basename(args.weight_path)[:len('_model.pth')]
-        prefix = 'untrained_' + old_prefix
-    return prefix
-
 
 def untrain_constrained(model,
                         retainloader,
@@ -136,13 +81,14 @@ def untrain_constrained(model,
         param.requires_grad = False
 
     epsilon = torch.tensor(0.).requires_grad_(False)
-    alpha = 1.
+    alpha = 10.
 
     # Run unlearning epochs
     for epoch in range(num_epochs):
         model.train()
         metrics_retain = initialize_metrics()
         metrics_forget = initialize_metrics()
+        metrics_both = initialize_additional_metrics(['grad'])
         n_batches = 0
 
         # Untraining loop
@@ -162,18 +108,20 @@ def untrain_constrained(model,
             retain_loss = criterion(model(retain_inputs), retain_labels)
 
             if epoch == 0:
-                if epsilon.item() <= retain_loss.item():
-                    print(f'Epsilon updated! From {epsilon.item()} to {1.01 * retain_loss.item()}')
-                    epsilon = 1.01 * retain_loss.clone().detach()
+                epsilon += retain_loss.clone().detach().cpu()
+                base_optimizer.zero_grad()
+                continue
 
-            # barrier = -1 * alpha * torch.log(epsilon - retain_loss)
-            barrier = torch.square(torch.max(torch.tensor(0), retain_loss - epsilon))
-            # barrier = torch.pow(torch.max(torch.tensor(0), retain_loss - epsilon), 4)
-            loss = forget_loss + barrier
+            # penalty = -1 * alpha * torch.log(epsilon - retain_loss) # logarithmic barrier; does not work with SGD
+            penalty = torch.square(torch.max(torch.tensor(0), retain_loss - epsilon)) # quadratic penalty
+            # penalty = torch.pow(torch.max(torch.tensor(0), retain_loss - epsilon), 4) # quartic penalty
+            # penalty = torch.exp(torch.max(torch.tensor(0), retain_loss - epsilon)) - 1.
+            loss = forget_loss + alpha * penalty
 
             base_optimizer.zero_grad()
             loss.backward()
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 100.)
+            curr_grad_norm = _grad_norm(model)
             base_optimizer.step()
 
             top1, top5 = calculate_accuracy(model(retain_inputs),
@@ -184,10 +132,17 @@ def untrain_constrained(model,
                                             forget_labels, topk=(1, 5))
             update_metrics(metrics_forget, -forget_loss, top1, top5,
                            mode='train')
+            update_additional_metrics(metrics_both, grad=curr_grad_norm)
+            
 
-        alpha *= 1.1
         average_metrics(metrics_retain, n_batches, mode='train')
         average_metrics(metrics_forget, n_batches, mode='train')
+        average_additional_metrics(metrics_both, n_batches, ['grad'])
+        if epoch == 0:
+            epsilon /= n_batches
+            print(f'epsilon = {epsilon}')
+        if metrics_both['train_grad'] < 5. and epoch != 0:
+            alpha *= 1.05
         # Validation loop
         model.eval()
         with torch.no_grad():
@@ -207,6 +162,7 @@ def untrain_constrained(model,
         print_metrics(metrics_forget, epoch, num_epochs)
         log_metrics_unlearn(writer, metrics_retain, metrics_forget, epoch, mode='train')
         log_metrics(writer, metrics_retain, epoch, mode='val')
+        log_additional_metrics(writer, metrics_both, epoch, 'train', ['grad'])
 
     # Save the final model
     model_save_path = os.path.join(log_dir, f"{name_prefix}_model.pth")
@@ -243,6 +199,11 @@ def main(args):
     confused_dataset_handler = data.AmendedDatasetHandler(dataset_handler, data_confuser, splitter)
     train_loader, val_loader, test_loader, forget_loader, retain_loader, unseen_loader = \
         confused_dataset_handler.get_dataloaders()
+    # train_loader, val_loader, test_loader, retain_loader, forget_loader = data.get_cifar100_dataloaders(batch_size=args.batch_size, validation_split=0.1,
+    #                                                                  num_workers=2, random_seed=42,
+    #                                                                  data_dir=args.data_dir)
+
+    # forget_loader, train_loader = data.CorrespondingLoaders(forget_loader, train_loader).get_loaders() # sync labels for train and forget
     # Initialize model
     model = get_model(args.model, num_classes=100, pretrained_weights=None,
                       weight_path=args.weight_path)
