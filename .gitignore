@@ -6,7 +6,8 @@ __pycache__/
 # C extensions
 *.so
 runs/
-runs/*
+runs/run.sh
+>>>>>>> controlled_unlearning_branch
 configs/
 # Distribution / packaging
 .Python

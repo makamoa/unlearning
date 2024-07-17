@@ -24,6 +24,10 @@ def get_model(model_name, num_classes=100, pretrained_weights=None, weight_path=
     elif model_name == 'resnest101e':
         model = timm.create_model('resnest101e', weights=pretrained_weights)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
+    elif model_name == 'binary_classifier':
+        model = SimpleBinaryClassifier(input_size=num_classes)
+    elif model_name == 'contrastive_classifier':
+        model = ComparisonModel(input_dim=num_classes, use_linear=True)
     else:
         raise ValueError(f"Model {model_name} not supported.")
 
@@ -43,6 +47,45 @@ def get_model(model_name, num_classes=100, pretrained_weights=None, weight_path=
     return model
 
 
+def negative_loss(loss_fn):
+    """
+    Returns a new loss function that computes the negative of the given loss function.
+
+    Args:
+        loss_fn (function): A PyTorch loss function.
+
+    Returns:
+        function: A new loss function that computes the negative of the input loss function.
+    """
+
+    def neg_loss(output, target):
+        return -loss_fn(output, target)
+
+    return neg_loss
+
+class SimpleBinaryClassifier(nn.Module):
+    def __init__(self, input_size):
+        super(SimpleBinaryClassifier, self).__init__()
+        self.fc1 = nn.Linear(input_size, 128)
+        self.bn1 = nn.BatchNorm1d(128)
+        self.dropout1 = nn.Dropout(0.5)
+
+        self.fc2 = nn.Linear(128, 64)
+        self.bn2 = nn.BatchNorm1d(64)
+        self.dropout2 = nn.Dropout(0.5)
+
+        self.fc3 = nn.Linear(64, 1)
+
+    def forward(self, x):
+        x = torch.relu(self.bn1(self.fc1(x)))
+        x = self.dropout1(x)
+
+        x = torch.relu(self.bn2(self.fc2(x)))
+        x = self.dropout2(x)
+
+        x = torch.sigmoid(self.fc3(x))
+        return x
+
 # Define the Comparison Model (Classifier)
 class ComparisonModel(nn.Module):
     def __init__(self, input_dim, feature_size=None, temperature=1.0, use_linear=True, use_norm=True):
@@ -50,6 +93,8 @@ class ComparisonModel(nn.Module):
         self.temperature = temperature
         self.use_linear = use_linear
         self.use_norm = use_norm
+        if feature_size is None:
+            feature_size = input_dim // 2
 
         if self.use_linear:
             self.linear_transform = nn.Linear(input_dim, feature_size, dtype=torch.float32)
@@ -62,15 +107,15 @@ class ComparisonModel(nn.Module):
 
     def forward(self, v1, v2):
         if self.use_linear:
-            v1 = self.linear_transform(v1)
-            v2 = self.linear_transform(v2)
+            v1 = self.linear_transform(v1 - v2)
+            #v2 = self.linear_transform(v1 - v2)
 
         if self.use_norm:
             v1 = self.normalize(v1)
-            v2 = self.normalize(v2)
+            #v2 = self.normalize(v2)
 
         # Compute the inner product (dot product) between the two vectors
-        inner_product = torch.mean(v1 * v2, dim=1, keepdim=True) / self.temperature
+        inner_product = torch.mean(v1, dim=1, keepdim=True) / self.temperature
 
         # Apply the sigmoid function
         output = self.sigmoid(inner_product)

@@ -367,19 +367,19 @@ def load_config(filename):
 
 def main(args):
     # Define CIFAR100 dataset handler
-    # dataset_handler = data.CIFAR100Handler(batch_size=args.batch_size,
-    #                                        validation_split=0.1,
-    #                                        random_seed=42,
-    #                                        data_dir=args.data_dir)
-    # data_confuser = data.uniform_confuser(confuse_level=.0, random_seed=42)
-    # splitter = data.mix_both_sets(amend_split=1., retain_split=0.1, random_seed=42)
-    # confused_dataset_handler = data.AmendedDatasetHandler(dataset_handler, data_confuser, splitter, class_wise_corr=True)
-    # train_loader, val_loader, test_loader, forget_loader, retain_loader, unseen_loader = \
-    #     confused_dataset_handler.get_dataloaders()
-    train_loader, val_loader, test_loader, retain_loader, forget_loader = get_cifar100_dataloaders(batch_size=args.batch_size, validation_split=0.1,
-                                                                     num_workers=2, random_seed=42,
-                                                                     data_dir=args.data_dir)
-    forget_loader, val_loader = CorrespondingLoaders(forget_loader, val_loader).get_loaders()
+    dataset_handler = data.CIFAR100Handler(batch_size=args.batch_size,
+                                           validation_split=0.1,
+                                           random_seed=42,
+                                           data_dir=args.data_dir)
+    data_confuser = data.uniform_confuser(confuse_level=.0, random_seed=42)
+    splitter = data.mix_both_sets(amend_split=1., retain_split=0.1, random_seed=42)
+    confused_dataset_handler = data.AmendedDatasetHandler(dataset_handler, data_confuser, splitter, class_wise_corr=True)
+    train_loader, val_loader, test_loader, forget_loader, retain_loader, unseen_loader = \
+        confused_dataset_handler.get_dataloaders()
+    # train_loader, val_loader, test_loader, retain_loader, forget_loader = get_cifar100_dataloaders(batch_size=args.batch_size, validation_split=0.1,
+    #                                                                  num_workers=2, random_seed=42,
+    #                                                                  data_dir=args.data_dir)
+    # forget_loader, val_loader = CorrespondingLoaders(forget_loader, val_loader).get_loaders()
     # Initialize model
     model = get_model(args.model, num_classes=100, pretrained_weights=None,
                       weight_path=args.weight_path)
@@ -426,7 +426,7 @@ if __name__ == "__main__":
     parser.add_argument('--rho', type=float, default=None, help='SAM radius parameter')
     parser.add_argument('--name_prefix', type=str, default=None,
                         help='Define name prefix to store results (same prefix is used for logs, checkpoints, weights, etc).')
-    parser.add_argument('--untrain', type=bool, default=False, help='SAM radius parameter')
+    parser.add_argument('--untrain', type=bool, default=False, help='Whether to untrain the model or perform the training')
     parser.add_argument('--sam_lr', type=float, default=0.1, help='Learning rate for the SAM base optimizer')
     parser.add_argument('--kl_retain_lr', type=float, default=0.1,
                         help='Learning rate for the remaining part of the retain loss')
