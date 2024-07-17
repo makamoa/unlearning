@@ -355,7 +355,7 @@ def untrain_models_simple(student, teacher, classifier, train_loader, val_loader
 def untrain_models_contrastive(student, teacher, classifier, train_loader, val_loader, retain_loader, forget_loader, num_epochs=10, learning_rate=0.001,
                  log_dir='runs', device='cuda', name_prefix=get_current_datetime_string(),
                    freeze_classifier=False, freeze_student=False,
-                   stoppage=True):
+                   stoppage=False):
     # Define loss function and optimizers
     criterion = nn.BCELoss()
     negative_criterion = negative_loss(criterion)
@@ -365,14 +365,16 @@ def untrain_models_contrastive(student, teacher, classifier, train_loader, val_l
 
     # Initialize TensorBoard SummaryWriter
     writer = SummaryWriter(os.path.join(log_dir, name_prefix))
-    forget_loader_ordered, val_loader_ordered = CorrespondingLoaders(forget_loader, val_loader, seed=42).get_loaders()
+    val_loader_ordered, forget_loader_ordered  = CorrespondingLoaders(val_loader, forget_loader, seed=42).get_loaders()
     val_loader_ordered, val_loader_ordered_2 = CorrespondingLoaders(val_loader_ordered, val_loader, seed=42).get_loaders()
     for epoch in range(num_epochs):
         student.train()
         classifier.train()
         metrics = initialize_metrics(mode='train')
 
-        for (inputs_retain, labels_retain), (inputs_forget, labels_forget), (inputs_val, labels_val), (inputs_val_2, labels_val_2) in zip(retain_loader, forget_loader_ordered, val_loader_ordered, val_loader_ordered_2):
+        for i, ((inputs_retain, labels_retain), (inputs_forget, labels_forget), (inputs_val, labels_val), (inputs_val_2, labels_val_2)) in enumerate(zip(retain_loader, forget_loader_ordered, val_loader_ordered, val_loader_ordered_2)):
+            assert labels_val.eq(labels_forget).all()
+            assert inputs_val.ne(inputs_forget).any()
             assert labels_val_2.eq(labels_val).all()
             assert inputs_val_2.ne(inputs_val).any()
             inputs_retain = inputs_retain.to(device)
@@ -435,7 +437,7 @@ def untrain_models_contrastive(student, teacher, classifier, train_loader, val_l
                 student_loss_value = negative_criterion(classifier_pred, combined_labels)
                 update_metrics(metrics, -student_loss_value, classifier_loss_value, performance_loss, student_top1, student_top5, binary_accuracy, mode='train')
 
-        average_metrics(metrics, len(forget_loader), mode='train')
+        average_metrics(metrics, i + 1, mode='train')
 
         # Validation loop
         student.eval()
@@ -463,7 +465,7 @@ def untrain_models_contrastive(student, teacher, classifier, train_loader, val_l
 
         print(f'Epoch {epoch + 1}/{num_epochs}, Train Classifier Loss: {metrics["train_classifier_loss"]:.4f}, Train Top-1 Accuracy: {metrics["train_top1"]:.2f}%, Train Top-5 Accuracy: {metrics["train_top5"]:.2f}%,  Classifier Accuracy: {metrics["train_binary_accuracy"]:.2f}%')
         print(f'                  Val Loss: {metrics["val_student_loss"]:.4f}, Val Top-1 Accuracy: {metrics["val_top1"]:.2f}%, Val Top-5 Accuracy: {metrics["val_top5"]:.2f}%')
-        if metrics["train_binary_accuracy"] < 0.5 and stoppage:
+        if metrics["train_binary_accuracy"] < 0.55 and stoppage:
             print('Training is finished with accuracy {:.4f}'.format(binary_accuracy))
             print(
                 f'Epoch {epoch + 1}/{num_epochs}, Train Classifier Loss: {metrics["train_classifier_loss"]:.4f}, Train Top-1 Accuracy: {metrics["train_top1"]:.2f}%, Train Top-5 Accuracy: {metrics["train_top5"]:.2f}%,  Classifier Accuracy: {metrics["train_binary_accuracy"]:.2f}%')
