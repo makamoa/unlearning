@@ -1,6 +1,7 @@
 from torch.utils.tensorboard import SummaryWriter
 import os
 from datetime import datetime
+import yaml
 
 def get_current_datetime_string():
     """
@@ -90,3 +91,11 @@ def build_name_prefix(args):
         old_prefix = os.path.basename(args.weight_path)[:len('_model.pth')]
         prefix = 'untrained_' + old_prefix
     return prefix
+
+def save_config(config, filename):
+    with open(filename, 'w') as f:
+        yaml.dump(config, f)
+
+def load_config(filename):
+    with open(filename, 'r') as f:
+        return yaml.load(f, Loader=yaml.FullLoader)

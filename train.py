@@ -192,8 +192,20 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     print('Training complete')
 
 
-def untrain_model(model, retainloader, forgetloader, validloader, retain_optimizer = None, forget_optimizer=None, retain_loss=None, forget_loss=None, num_epochs=10, learning_rate=0.001,
-                  log_dir='runs', device='cuda', name_prefix=get_current_datetime_string(), use_sam=False,
+def untrain_model(model,
+                  retainloader,
+                  forgetloader,
+                  validloader,
+                  retain_optimizer = None,
+                  forget_optimizer=None,
+                  retain_loss=None,
+                  forget_loss=None,
+                  num_epochs=10,
+                  learning_rate=0.001,
+                  log_dir='runs',
+                  device='cuda',
+                  name_prefix=get_current_datetime_string(),
+                  use_sam=False,
                   rho=0.05) -> None:
     """
     Unlearn a model based on the problem formulation
