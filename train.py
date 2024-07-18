@@ -205,6 +205,7 @@ def untrain_model(model,
                   log_dir='runs',
                   device='cuda',
                   name_prefix=get_current_datetime_string(),
+                  scheduler=None,
                   use_sam=False,
                   rho=0.05) -> None:
     """
@@ -225,6 +226,7 @@ def untrain_model(model,
         forgetloss: Loss function for forgotten data.
         log_dir: Directory to save TensorBoard logs.
         device: Device to run the model on (e.g., 'cpu' or 'cuda').
+        scheduler: A scheduler affecting any of optimizers.
     """
 
     if name_prefix is None:
@@ -286,7 +288,7 @@ def untrain_model(model,
                                        forget_labels, forget_loss,
                                        forget_optimizer, False)
             else:
-                forget_loss_value = 0
+                forget_loss_value = torch.tensor(0)
             top1, top5 = calculate_accuracy(model(retain_inputs),
                                             retain_labels, topk=(1, 5))
             update_metrics(metrics_retain, base_loss_value, top1, top5,
@@ -296,6 +298,9 @@ def untrain_model(model,
             update_metrics(metrics_forget, forget_loss_value, top1, top5,
                            mode='train')
 
+        if scheduler is not None:
+            scheduler.step()
+            print(scheduler.get_last_lr())
         average_metrics(metrics_retain, n_batches, mode='train')
         average_metrics(metrics_forget, n_batches, mode='train')
         # Validation loop

@@ -81,7 +81,7 @@ def untrain_constrained(model,
         param.requires_grad = False
 
     epsilon = torch.tensor(0.).requires_grad_(False)
-    alpha = 10.
+    alpha = 5.
 
     # Run unlearning epochs
     for epoch in range(num_epochs):
@@ -108,9 +108,9 @@ def untrain_constrained(model,
             retain_loss = criterion(model(retain_inputs), retain_labels)
 
             if epoch == 0:
-                epsilon += retain_loss.clone().detach().cpu()
-                base_optimizer.zero_grad()
-                continue
+                if epsilon.item() <= retain_loss.item():
+                    print(f'Epsilon updated! From {epsilon.item()} to {1.01 * retain_loss.item()}')
+                    epsilon = 1.01 * retain_loss.clone().detach()
 
             # penalty = -1 * alpha * torch.log(epsilon - retain_loss) # logarithmic barrier; does not work with SGD
             penalty = torch.square(torch.max(torch.tensor(0), retain_loss - epsilon)) # quadratic penalty
@@ -138,9 +138,6 @@ def untrain_constrained(model,
         average_metrics(metrics_retain, n_batches, mode='train')
         average_metrics(metrics_forget, n_batches, mode='train')
         average_additional_metrics(metrics_both, n_batches, ['grad'])
-        if epoch == 0:
-            epsilon /= n_batches
-            print(f'epsilon = {epsilon}')
         if metrics_both['train_grad'] < 5. and epoch != 0:
             alpha *= 1.05
         # Validation loop

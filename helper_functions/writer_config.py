@@ -88,8 +88,10 @@ def build_name_prefix(args):
     if not args.untrain:
         prefix = f'model_{args.model}_lr_{args.learning_rate}_' + get_current_datetime_string()
     else:
-        old_prefix = os.path.basename(args.weight_path)[:len('_model.pth')]
-        prefix = 'untrained_' + old_prefix
+        # old_prefix = os.path.basename(args.weight_path)[:len('_model.pth')]
+        # prefix = 'untrained_' + old_prefix
+        prefix = f'model_{args.model}_lr_{args.learning_rate}_untrain' \
+            + get_current_datetime_string()
     return prefix
 
 def save_config(config, filename):
