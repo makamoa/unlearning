@@ -45,11 +45,13 @@ def untrain_constrained(model,
                         forgetloader,
                         unseenloader,
                         validloader,
+                        internal_method,
                         num_epochs=10,
                         learning_rate=0.001,
                         log_dir='runs',
                         device='cuda',
-                        name_prefix=get_current_datetime_string()) -> None:
+                        name_prefix=get_current_datetime_string(),
+                        stopping_criterion_enabled=False) -> None:
     """
     Unlearn a model based on the constrained problem formulation.
 
@@ -60,13 +62,21 @@ def untrain_constrained(model,
         unseenloader: Dataloader for the unseen data used implicitly in
             training.
         validloader: DataLoader for the validation data.
+        internal_method: Method for solving the constrained optimization
+            problem. Available options: `penalty`, `lagrange'.
         num_epochs: Number of epochs to untrain.
         log_dir: Directory to save TensorBoard logs.
         device: Device to run the model on (e.g., 'cpu' or 'cuda').
+        stopping_criterion_enabled: If False, the algorithm runs for
+            `num_epochs`. If True, the algorithm stops when the forget loss
+            gets larger than the validation loss. Algorithm terminates not
+            later than `num_epochs` epochs.
     """
 
     if name_prefix is None:
         name_prefix = get_current_datetime_string()
+
+    name_prefix += f'_constrained_{internal_method}'
 
     # Initialize TensorBoard SummaryWriter
     writer = SummaryWriter(os.path.join(log_dir, name_prefix))
@@ -82,9 +92,15 @@ def untrain_constrained(model,
 
     epsilon = torch.tensor(0.).requires_grad_(False)
     alpha = 5.
+    dual_variable = torch.tensor(1.).requires_grad_(False).to(device)
+
+    stop_training = False
 
     # Run unlearning epochs
     for epoch in range(num_epochs):
+        if stop_training:
+            break
+
         model.train()
         metrics_retain = initialize_metrics()
         metrics_forget = initialize_metrics()
@@ -95,7 +111,11 @@ def untrain_constrained(model,
         assert len(forgetloader) > 0
         assert len(forgetloader) <= len(retainloader)
 
-        print(f'Current alpha = {alpha}')
+        if internal_method=='penalty':
+            print(f'Current alpha = {alpha}')
+
+        if internal_method=='lagrange':
+            print(f'Current dual variable = {dual_variable.cpu().item()}')
         for retain_batch, forget_batch \
                 in zip(retainloader, forgetloader):
             n_batches += 1
@@ -112,17 +132,32 @@ def untrain_constrained(model,
                     print(f'Epsilon updated! From {epsilon.item()} to {1.01 * retain_loss.item()}')
                     epsilon = 1.01 * retain_loss.clone().detach()
 
-            # penalty = -1 * alpha * torch.log(epsilon - retain_loss) # logarithmic barrier; does not work with SGD
-            penalty = torch.square(torch.max(torch.tensor(0), retain_loss - epsilon)) # quadratic penalty
-            # penalty = torch.pow(torch.max(torch.tensor(0), retain_loss - epsilon), 4) # quartic penalty
-            # penalty = torch.exp(torch.max(torch.tensor(0), retain_loss - epsilon)) - 1.
-            loss = forget_loss + alpha * penalty
+            # penalty method
+            if internal_method == 'penalty':
+                # penalty = -1 * alpha * torch.log(epsilon - retain_loss) # logarithmic barrier; does not work with SGD
+                penalty = torch.square(torch.max(torch.tensor(0), retain_loss - epsilon)) # quadratic penalty
+                # penalty = torch.pow(torch.max(torch.tensor(0), retain_loss - epsilon), 4) # quartic penalty
+                # penalty = torch.exp(torch.max(torch.tensor(0), retain_loss - epsilon)) - 1.
+                loss = forget_loss + alpha * penalty
 
-            base_optimizer.zero_grad()
-            loss.backward()
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), 100.)
-            curr_grad_norm = _grad_norm(model)
-            base_optimizer.step()
+                base_optimizer.zero_grad()
+                loss.backward()
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), 100.)
+                curr_grad_norm = _grad_norm(model)
+                base_optimizer.step()
+
+            if internal_method == 'lagrange':
+                lagrange_objective = forget_loss + dual_variable * (retain_loss - epsilon)
+                base_optimizer.zero_grad()
+                lagrange_objective.backward()
+                curr_grad_norm = _grad_norm(model)
+                base_optimizer.step()
+
+                new_retain_loss = criterion(model(retain_inputs), retain_labels)
+                with torch.no_grad():
+                    dual_variable += learning_rate * (new_retain_loss - epsilon)
+
+            
 
             top1, top5 = calculate_accuracy(model(retain_inputs),
                                             retain_labels, topk=(1, 5))
@@ -138,8 +173,12 @@ def untrain_constrained(model,
         average_metrics(metrics_retain, n_batches, mode='train')
         average_metrics(metrics_forget, n_batches, mode='train')
         average_additional_metrics(metrics_both, n_batches, ['grad'])
-        if metrics_both['train_grad'] < 5. and epoch != 0:
-            alpha *= 1.05
+
+        # penalty method updates
+        if internal_method == 'penalty':
+            if metrics_both['train_grad'] < 5. and epoch != 0:
+                alpha *= 1.05
+
         # Validation loop
         model.eval()
         with torch.no_grad():
@@ -160,6 +199,12 @@ def untrain_constrained(model,
         log_metrics_unlearn(writer, metrics_retain, metrics_forget, epoch, mode='train')
         log_metrics(writer, metrics_retain, epoch, mode='val')
         log_additional_metrics(writer, metrics_both, epoch, 'train', ['grad'])
+
+        if stopping_criterion_enabled and \
+            metrics_forget['train_loss'] >= metrics_retain['val_loss']:
+            print(f'Stopping unlearning at iteration {epoch+1}')
+            stop_training = True
+
 
     # Save the final model
     model_save_path = os.path.join(log_dir, f"{name_prefix}_model.pth")
@@ -213,6 +258,7 @@ def main(args):
                         forget_loader,
                         unseen_loader,
                         val_loader,
+                        args.constrained_internal_method,
                         num_epochs=args.untrain_num_epochs,
                         learning_rate=args.learning_rate,
                         log_dir=args.log_dir,
@@ -243,8 +289,14 @@ if __name__ == "__main__":
     parser.add_argument('--kl_forget_lr', type=float, default=0.1, help='Learning rate for the forget loss')
     parser.add_argument('--untrain_num_epochs', type=int, default=5, help='Number of epochs to untrain for.')
     parser.add_argument('--SCRUB', type=bool, default=False, help='Use SCRUB optimizer or not for untraining')
+    parser.add_argument('--constrained_internal_method', type=str, help='Internal constrained optimization problem.')
+
 
     args = parser.parse_args()
+
+    if args.constrained_internal_method not in ['penalty', 'lagrange']:
+        raise ValueError('Unknown value for `constrained_internal_method`.')
+
     if args.untrain:
         assert args.weight_path is not None
     if args.name_prefix is None:

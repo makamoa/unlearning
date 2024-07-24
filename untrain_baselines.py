@@ -3,7 +3,7 @@ from torch import optim
 from helper_functions import get_current_datetime_string
 from metrics import calculate_accuracy
 from train import untrain_model
-from optimizer import KL_retain_loss, KL_forget_loss
+from optimizer import KL_retain_loss, KL_forget_loss, negative_CE_loss
 
 from typing import Literal, Callable
 
@@ -21,7 +21,9 @@ def catastrophic_forgetting(model: torch.nn.Module,
                             learning_rate: float=0.001,
                             log_dir: str='runs',
                             device: Literal['cuda', 'cpu']='cuda',
-                            name_prefix: str=get_current_datetime_string()) -> None:
+                            name_prefix: str=get_current_datetime_string(),
+                            shot_epoch=None,
+                            stopping_criterion_enabled=False) -> None:
     """
     Freeze the first `k` layers of the model and fine-tune the rest using base_loss.
 
@@ -41,6 +43,18 @@ def catastrophic_forgetting(model: torch.nn.Module,
         log_dir: Directory to save TensorBoard logs.
         device: Device to run the model on (e.g., 'cpu' or 'cuda').
         name_prefix: Prefix for naming logs and saved models.
+        shot_epoch: Epoch after which to save the model if not None.
+            This is done to save model metrics at the epoch of interest,
+            e.g., in the end of the unlearning phase for unlearning algorithms
+            like SCRUB, EU-k, CF-k etc.
+        stopping_criterion_enabled: If False, the algorithm runs for
+        `num_epochs`. If True, the algorithm stops when:
+            1) forget accuracy is not smaller than validation accuracy if
+            forget accuracy grows for the last two iterations;
+            2) forget accuracy is not larger than validation accurayc if
+            forget accuracy decreased for the last two iterations.
+            Algorithm terminates not earlier than `shot_epoch` epochs but not
+            later than `num_epochs` epochs.        
     """
     print(f'Running Catastrophic Forgetting-k.')
     print(f'First {k} layers are to be frozen...')
@@ -75,7 +89,9 @@ def catastrophic_forgetting(model: torch.nn.Module,
                   device=device,
                   name_prefix=name_prefix,
                   use_sam=False,
-                  rho=None)
+                  rho=None,
+                  shot_epoch=shot_epoch,
+                  stopping_criterion_enabled=stopping_criterion_enabled)
     
     for param in model.parameters():
         param.requires_grad = True
@@ -92,7 +108,10 @@ def exact_unlearning(model: torch.nn.Module,
                      learning_rate: float=0.001,
                      log_dir: str='runs',
                      device: Literal['cuda', 'cpu']='cuda',
-                     name_prefix: str=get_current_datetime_string()) -> None:
+                     name_prefix: str=get_current_datetime_string(),
+                     shot_epoch=None,
+                     stopping_criterion_enabled=False) -> None:
+
     """
     Freeze the first `k` layers of the model, reinitialize the rest, and
     fine-tune using base_loss.
@@ -112,6 +131,18 @@ def exact_unlearning(model: torch.nn.Module,
         log_dir: Directory to save TensorBoard logs.
         device: Device to run the model on (e.g., 'cpu' or 'cuda').
         name_prefix: Prefix for naming logs and saved models.
+        shot_epoch: Epoch after which to save the model if not None.
+            This is done to save model metrics at the epoch of interest,
+            e.g., in the end of the unlearning phase for unlearning algorithms
+            like SCRUB, EU-k, CF-k etc.
+        stopping_criterion_enabled: If False, the algorithm runs for
+        `num_epochs`. If True, the algorithm stops when:
+            1) forget accuracy is not smaller than validation accuracy if
+            forget accuracy grows for the last two iterations;
+            2) forget accuracy is not larger than validation accurayc if
+            forget accuracy decreased for the last two iterations.
+            Algorithm terminates not earlier than `shot_epoch` epochs but not
+            later than `num_epochs` epochs.
     """
     print(f'Running Exact Unlearning with k={k}.')
     print(f'First {k} layers are to be frozen...')
@@ -150,7 +181,10 @@ def exact_unlearning(model: torch.nn.Module,
                   device=device,
                   name_prefix=name_prefix,
                   use_sam=False,
-                  rho=None)
+                  rho=None,
+                  shot_epoch=shot_epoch,
+                  stopping_criterion_enabled=stopping_criterion_enabled)
+
     
     for param in model.parameters():
         param.requires_grad = True
@@ -166,7 +200,10 @@ def finetuning(model: torch.nn.Module,
                learning_rate: float=0.001,
                log_dir: str='runs',
                device: Literal['cuda', 'cpu']='cuda',
-               name_prefix: str=get_current_datetime_string()) -> None:
+               name_prefix: str=get_current_datetime_string(),
+               shot_epoch=None,
+               stopping_criterion_enabled=False) -> None:
+
     """
     Fine-tune the entire model on the retain set.
 
@@ -184,6 +221,18 @@ def finetuning(model: torch.nn.Module,
         log_dir: Directory to save TensorBoard logs.
         device: Device to run the model on (e.g., 'cpu' or 'cuda').
         name_prefix: Prefix for naming logs and saved models.
+        shot_epoch: Epoch after which to save the model if not None.
+            This is done to save model metrics at the epoch of interest,
+            e.g., in the end of the unlearning phase for unlearning algorithms
+            like SCRUB, EU-k, CF-k etc.
+        stopping_criterion_enabled: If False, the algorithm runs for
+        `num_epochs`. If True, the algorithm stops when:
+            1) forget accuracy is not smaller than validation accuracy if
+            forget accuracy grows for the last two iterations;
+            2) forget accuracy is not larger than validation accurayc if
+            forget accuracy decreased for the last two iterations.
+            Algorithm terminates not earlier than `shot_epoch` epochs but not
+            later than `num_epochs` epochs.
     """
     print(f'Running Fine-tuning.')
 
@@ -203,7 +252,9 @@ def finetuning(model: torch.nn.Module,
                   device=device,
                   name_prefix=name_prefix,
                   use_sam=False,
-                  rho=None)
+                  rho=None,
+                  shot_epoch=shot_epoch,
+                  stopping_criterion_enabled=stopping_criterion_enabled)
 
     print('Fine-tuning complete.')
 
@@ -212,13 +263,15 @@ def neggradplus(model: torch.nn.Module,
                 retainloader: torch.utils.data.DataLoader,
                 forgetloader: torch.utils.data.DataLoader,
                 validloader: torch.utils.data.DataLoader,
-                forget_loss: Callable,
                 forget_optimizer: optim,
                 num_epochs: int=10,
                 learning_rate: float=0.001,
                 log_dir: str='runs',
                 device: Literal['cuda', 'cpu']='cuda',
-                name_prefix: str=get_current_datetime_string()) -> None:
+                name_prefix: str=get_current_datetime_string(),
+                shot_epoch=None,
+                stopping_criterion_enabled=False) -> None:
+
     """
     Perform optimizer steps on the base_loss and then on the forget_loss.
 
@@ -228,12 +281,23 @@ def neggradplus(model: torch.nn.Module,
         forgetloader: DataLoader for the data to be forgotten.
         validloader: DataLoader for the validation data.
         base_loss: Base loss function for the retained data.
-        forget_loss: Forget loss function for the forgotten data.
         num_epochs: Number of epochs.
         learning_rate: Learning rate for the base optimizer.
         log_dir: Directory to save TensorBoard logs.
         device: Device to run the model on (e.g., 'cpu' or 'cuda').
         name_prefix: Prefix for naming logs and saved models.
+        shot_epoch: Epoch after which to save the model if not None.
+            This is done to save model metrics at the epoch of interest,
+            e.g., in the end of the unlearning phase for unlearning algorithms
+            like SCRUB, EU-k, CF-k etc.
+        stopping_criterion_enabled: If False, the algorithm runs for
+        `num_epochs`. If True, the algorithm stops when:
+            1) forget accuracy is not smaller than validation accuracy if
+            forget accuracy grows for the last two iterations;
+            2) forget accuracy is not larger than validation accurayc if
+            forget accuracy decreased for the last two iterations.
+            Algorithm terminates not earlier than `shot_epoch` epochs but not
+            later than `num_epochs` epochs.
     """
     print('Running NegGrad+.')
 
@@ -247,14 +311,16 @@ def neggradplus(model: torch.nn.Module,
                   retain_optimizer=None,
                   forget_optimizer=forget_optimizer,
                   retain_loss=None,
-                  forget_loss=forget_loss,
+                  forget_loss=negative_CE_loss,
                   num_epochs=num_epochs,
                   learning_rate=learning_rate,
                   log_dir=log_dir,
                   device=device,
                   name_prefix=name_prefix,
                   use_sam=False,
-                  rho=None)
+                  rho=None,
+                  shot_epoch=shot_epoch,
+                  stopping_criterion_enabled=stopping_criterion_enabled)
 
     print('NegGrad+ complete.')
 
@@ -270,7 +336,10 @@ def SCRUB(model: torch.nn.Module,
           learning_rate: float=0.001,
           log_dir: str='runs',
           device: Literal['cuda', 'cpu']='cuda',
-          name_prefix: str=get_current_datetime_string()) -> None:
+          name_prefix: str=get_current_datetime_string(),
+          shot_epoch=None,
+          stopping_criterion_enabled=False) -> None:
+
     """
     Perform unlearning using the SCRUB method.
 
@@ -288,6 +357,18 @@ def SCRUB(model: torch.nn.Module,
         log_dir: Directory to save TensorBoard logs.
         device: Device to run the model on (e.g., 'cpu' or 'cuda').
         name_prefix: Prefix for naming logs and saved models.
+        shot_epoch: Epoch after which to save the model if not None.
+            This is done to save model metrics at the epoch of interest,
+            e.g., in the end of the unlearning phase for unlearning algorithms
+            like SCRUB, EU-k, CF-k etc.
+        stopping_criterion_enabled: If False, the algorithm runs for
+        `num_epochs`. If True, the algorithm stops when:
+            1) forget accuracy is not smaller than validation accuracy if
+            forget accuracy grows for the last two iterations;
+            2) forget accuracy is not larger than validation accurayc if
+            forget accuracy decreased for the last two iterations.
+            Algorithm terminates not earlier than `shot_epoch` epochs but not
+            later than `num_epochs` epochs.
     """
     print(f'Running SCRUB...')
 
@@ -310,6 +391,8 @@ def SCRUB(model: torch.nn.Module,
                   name_prefix=name_prefix,
                   scheduler=forget_scheduler,
                   use_sam=False,
-                  rho=None)
+                  rho=None,
+                  shot_epoch=shot_epoch,
+                  stopping_criterion_enabled=stopping_criterion_enabled)
 
     print('SCRUB complete.')

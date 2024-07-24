@@ -207,10 +207,13 @@ def untrain_model(model,
                   name_prefix=get_current_datetime_string(),
                   scheduler=None,
                   use_sam=False,
-                  rho=0.05) -> None:
+                  rho=0.05,
+                  shot_epoch=None, 
+                  stopping_criterion_enabled=False) -> None:
     """
     Unlearn a model based on the problem formulation
-    `minimize retainloss + forgetloss`.
+    `minimize baseloss + retainloss + forgetloss`. `baseloss` is
+    defined in the body of the function.
 
     Args:
         model: The neural network model that requires unlearning.
@@ -227,6 +230,16 @@ def untrain_model(model,
         log_dir: Directory to save TensorBoard logs.
         device: Device to run the model on (e.g., 'cpu' or 'cuda').
         scheduler: A scheduler affecting any of optimizers.
+        use_sam: Whether to use Sharpness-Aware Minimization.
+        rho: Rho parameter for SAM.
+        shot_epoch: Epoch after which to save the model if not None.
+            This is done to save model metrics at the epoch of interest,
+            e.g., in the end of the unlearning phase for unlearning algorithms
+            like SCRUB, EU-k, CF-k etc.
+        stopping_criterion_enabled: If False, the algorithm runs for
+            `num_epochs`. If True, the algorithm stops when the forget loss
+            gets larger than the validation loss. Algorithm terminates not
+            later than `num_epochs` epochs.
     """
 
     if name_prefix is None:
@@ -247,8 +260,18 @@ def untrain_model(model,
     for param in model_teacher.parameters():
         param.requires_grad = False
 
+    stop_training = False
+
     # Run unlearning epochs
     for epoch in range(num_epochs):
+        if epoch == shot_epoch:
+            model_save_path = os.path.join(log_dir, f"{name_prefix}_at_shot_epoch_{shot_epoch}_model.pth")
+            torch.save(model.state_dict(), model_save_path)
+            print(f'Model saved at shot epoch to {model_save_path}')
+
+        if stop_training:
+            break
+
         model.train()
         metrics_retain = initialize_metrics()
         metrics_forget = initialize_metrics()
@@ -322,6 +345,11 @@ def untrain_model(model,
         print_metrics(metrics_forget, epoch, num_epochs)
         log_metrics_unlearn(writer, metrics_retain, metrics_forget, epoch, mode='train')
         log_metrics(writer, metrics_retain, epoch, mode='val')
+
+        if stopping_criterion_enabled and \
+            (-1 * metrics_forget['train_loss']) >= metrics_retain['val_loss']:
+            print(f'Stopping unlearning at iteration {epoch+1}')
+            stop_training = True
 
     # Save the final model
     model_save_path = os.path.join(log_dir, f"{name_prefix}_model.pth")

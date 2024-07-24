@@ -33,6 +33,8 @@ from untrain_baselines import (
     SCRUB
 )
 
+from train_constrained_unlearning import untrain_constrained
+
 def main(args):
     # Define CIFAR100 dataset handler
     dataset_handler = data.CIFAR100Handler(batch_size=args.batch_size,
@@ -48,8 +50,7 @@ def main(args):
     confused_dataset_handler = data.AmendedDatasetHandler(
         dataset_handler,
         data_confuser,
-        splitter,
-        class_wise_corr=True
+        splitter
         )
     train_loader, val_loader, test_loader, forget_loader, \
     retain_loader, unseen_loader = confused_dataset_handler.get_dataloaders()
@@ -63,80 +64,128 @@ def main(args):
 
     # Train the model
     if not args.untrain:
-        train_model(model, train_loader, val_loader, num_epochs=args.num_epochs,
-                    learning_rate=args.learning_rate, log_dir=args.log_dir,
-                    device=device, use_sam=args.use_sam, rho=args.rho,
+        current_train_loader = None
+        if args.retain_set:
+            print('The model is trained on the retain set.')
+            current_train_loader = retain_loader
+        else:
+            print('The model is trained on the full train set.')
+            current_train_loader = train_loader
+        train_model(model,
+                    current_train_loader,
+                    val_loader,
+                    num_epochs=args.num_epochs,
+                    learning_rate=args.learning_rate,
+                    log_dir=args.log_dir,
+                    device=device,
+                    use_sam=args.use_sam,
+                    rho=args.rho,
                     name_prefix=args.name_prefix)
     else:
-        # forget_optimizer = torch.optim.SGD(model.parameters(),
-        #                                    lr=args.kl_forget_lr,
-        #                                    momentum=0.9)
-        # forget_scheduler = torch.optim.lr_scheduler.StepLR(
-        #     forget_optimizer,
-        #     step_size=2,
-        #     gamma=0.)
-        # retain_optimizer = torch.optim.SGD(model.parameters(),
-        #                                    lr=args.kl_retain_lr,
-        #                                    momentum=0.9)
-        # SCRUB(model=model,
-        #       retainloader=retain_loader,
-        #       forgetloader=forget_loader,
-        #       validloader=val_loader,
-        #       retain_optimizer=retain_optimizer,
-        #       forget_optimizer=forget_optimizer,
-        #       forget_scheduler=forget_scheduler,
-        #       num_epochs=args.untrain_num_epochs,
-        #       learning_rate=args.learning_rate,
-        #       log_dir=args.log_dir,
-        #       device=args.device,
-        #       name_prefix=args.name_prefix)
+        if args.unlearning_algorithm == 'SCRUB':
+            forget_optimizer = torch.optim.SGD(model.parameters(),
+                                            lr=args.kl_forget_lr,
+                                            momentum=0.9)
+            forget_optimizer_stop = args.untrain_num_epochs
+            print(f'SCRUB forget optimizer gets called off in {forget_optimizer_stop} epochs.')
+            forget_scheduler = torch.optim.lr_scheduler.StepLR(
+                forget_optimizer,
+                step_size=forget_optimizer_stop,
+                gamma=0.)
+            retain_optimizer = torch.optim.SGD(model.parameters(),
+                                            lr=args.kl_retain_lr,
+                                            momentum=0.9)
+            SCRUB(model=model,
+                retainloader=retain_loader,
+                forgetloader=forget_loader,
+                validloader=val_loader,
+                retain_optimizer=retain_optimizer,
+                forget_optimizer=forget_optimizer,
+                forget_scheduler=forget_scheduler,
+                num_epochs=args.untrain_num_epochs,
+                learning_rate=args.learning_rate,
+                log_dir=args.log_dir,
+                device=args.device,
+                name_prefix=args.name_prefix,
+                shot_epoch=None,
+                stopping_criterion_enabled=args.stop_criterion)
 
-        # forget_optimizer = torch.optim.SGD(model.parameters(),
-        #                                    lr=args.kl_forget_lr,
-        #                                    momentum=0.9)
-        # forget_loss = KL_forget_loss
-        # neggradplus(model=model,
-        #             retainloader=retain_loader,
-        #             forgetloader=forget_loader,
-        #             validloader=val_loader,
-        #             forget_loss=forget_loss,
-        #             forget_optimizer=forget_optimizer,
-        #             num_epochs=args.untrain_num_epochs,
-        #             learning_rate=args.learning_rate,
-        #             log_dir=args.log_dir,
-        #             device=args.device,
-        #             name_prefix=args.name_prefix)
+        if args.unlearning_algorithm == 'neggradplus':
+            forget_optimizer = torch.optim.SGD(model.parameters(),
+                                            lr=args.kl_forget_lr,
+                                            momentum=0.9)
+            neggradplus(model=model,
+                        retainloader=retain_loader,
+                        forgetloader=forget_loader,
+                        validloader=val_loader,
+                        forget_optimizer=forget_optimizer,
+                        num_epochs=args.untrain_num_epochs,
+                        learning_rate=args.learning_rate,
+                        log_dir=args.log_dir,
+                        device=args.device,
+                        name_prefix=args.name_prefix,
+                        shot_epoch=None,
+                        stopping_criterion_enabled=args.stop_criterion)
+            
+        if args.unlearning_algorithm == 'euk':
+            exact_unlearning(model=model,
+                            k=-1,
+                            retainloader=retain_loader,
+                            forgetloader=forget_loader,
+                            validloader=val_loader,
+                            num_epochs=args.finetuning_num_epochs,
+                            learning_rate=args.learning_rate,
+                            log_dir=args.log_dir,
+                            device=args.device,
+                            name_prefix=args.name_prefix,
+                            shot_epoch=0,
+                            stopping_criterion_enabled=False)
+            
+        if args.unlearning_algorithm == 'cfk':
+            catastrophic_forgetting(model=model,
+                                    k=-1,
+                                    retainloader=retain_loader,
+                                    forgetloader=forget_loader,
+                                    validloader=val_loader,
+                                    num_epochs=args.finetuning_num_epochs,
+                                    learning_rate=args.learning_rate,
+                                    log_dir=args.log_dir,
+                                    device=args.device,
+                                    name_prefix=args.name_prefix,
+                                    shot_epoch=0,
+                                    stopping_criterion_enabled=False)
 
-        # finetuning(model=model,
-        #            retainloader=retain_loader,
-        #            forgetloader=forget_loader,
-        #            validloader=val_loader,
-        #            num_epochs=args.untrain_num_epochs,
-        #            learning_rate=args.learning_rate,
-        #            log_dir=args.log_dir,
-        #            device=args.device,
-        #            name_prefix=args.name_prefix)
-
-        # exact_unlearning(model=model,
-        #                  k=-5,
-        #                  retainloader=retain_loader,
-        #                  forgetloader=forget_loader,
-        #                  validloader=val_loader,
-        #                  num_epochs=args.untrain_num_epochs,
-        #                  learning_rate=args.learning_rate,
-        #                  log_dir=args.log_dir,
-        #                  device=args.device,
-        #                  name_prefix=args.name_prefix)
-
-        catastrophic_forgetting(model=model,
-                                k=-1,
+        if args.unlearning_algorithm == 'constrained':
+            untrain_constrained(model=model, 
                                 retainloader=retain_loader,
                                 forgetloader=forget_loader,
+                                unseenloader=unseen_loader,
                                 validloader=val_loader,
+                                internal_method=args.constrained_internal_method,
                                 num_epochs=args.untrain_num_epochs,
                                 learning_rate=args.learning_rate,
                                 log_dir=args.log_dir,
-                                device=args.device)
+                                device=args.device,
+                                name_prefix=args.name_prefix,
+                                stopping_criterion_enabled=args.stop_criterion)
+
+        if args.unlearning_algorithm in ['finetuning', 'SCRUB', 'neggradplus', 'constrained']:
+            # Once the unlearning is done, model is finetuned
+            print('Finetuning the model.')
+            if args.unlearning_algorithm in ['SCRUB', 'neggradplus']:
+                print(f'After unlearning by {args.unlearning_algorithm}')
+            full_name_prefix = args.name_prefix + '_' + args.unlearning_algorithm
+            finetuning(model=model,
+                    retainloader=retain_loader,
+                    forgetloader=forget_loader,
+                    validloader=val_loader,
+                    num_epochs=args.finetuning_num_epochs,
+                    learning_rate=args.learning_rate,
+                    log_dir=args.log_dir,
+                    device=args.device,
+                    name_prefix=full_name_prefix,
+                    shot_epoch=0,
+                    stopping_criterion_enabled=False)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a model on CIFAR-100 with TensorBoard logging.")
@@ -156,16 +205,37 @@ if __name__ == "__main__":
     parser.add_argument('--name_prefix', type=str, default=None,
                         help='Define name prefix to store results (same prefix is used for logs, checkpoints, weights, etc).')
     parser.add_argument('--untrain', type=bool, default=False, help='Whether to untrain the model or perform the training')
+    parser.add_argument('--retain_set', type=bool, default=False, help='Whether training must be done on the  scratch or not')
     parser.add_argument('--sam_lr', type=float, default=0.1, help='Learning rate for the SAM base optimizer')
     parser.add_argument('--kl_retain_lr', type=float, default=0.1,
                         help='Learning rate for the remaining part of the retain loss')
     parser.add_argument('--kl_forget_lr', type=float, default=0.1, help='Learning rate for the forget loss')
-    parser.add_argument('--untrain_num_epochs', type=int, default=5, help='Number of epochs to untrain for.')
-    parser.add_argument('--SCRUB', type=bool, default=False, help='Use SCRUB optimizer or not for untraining')
+    parser.add_argument('--untrain_num_epochs', type=int, default=0, help='Number of epochs to untrain for.')
+    parser.add_argument('--finetuning_num_epochs', type=int, default=0, help='Number of epochs for finetining the model.')
+    parser.add_argument('--unlearning_algorithm', type=str, help='Sets the unlearning algorithm. Available options: \
+                        [SCRUB, finetuning, euk, cfk, neggradplus, constrained]')
+    parser.add_argument('--stop_criterion', action='store_true', help='Whether to apply a stop criterion or not')
+    parser.add_argument('--constrained_internal_method', type=str, help='Internal constrained optimization problem.')
+
 
     args = parser.parse_args()
     if args.untrain:
         assert args.weight_path is not None
+
+    if args.unlearning_algorithm not in \
+        ['SCRUB', 'finetuning', 'euk', 'cfk', 'neggradplus', 'constrained']:
+        raise ValueError('`unlearning_algorithm` value is not known')
+
+    if args.unlearning_algorithm == 'finetuning' and args.finetuning_num_epochs == 0:
+        raise UserWarning('`finetuning_num_epochs` is zero')
+
+    if args.unlearning_algorithm == 'constrained' and\
+        args.constrained_internal_method not in ['penalty', 'lagrange']:
+        raise ValueError('Unknown value for `constrained_internal_method`.')
+
+    if args.retain_set:
+        assert not args.untrain
+
     if args.name_prefix is None:
         args.name_prefix = build_name_prefix(args)
     if args.config_file:
