@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import timm
+import torch.nn.functional as F
+import torch.optim as optim
 
 def get_model(model_name, num_classes=100, pretrained_weights=None, weight_path=None):
     assert pretrained_weights is None or weight_path is None, \
@@ -28,6 +30,10 @@ def get_model(model_name, num_classes=100, pretrained_weights=None, weight_path=
         model = SimpleBinaryClassifier(input_size=num_classes)
     elif model_name == 'contrastive_classifier':
         model = ComparisonModel(input_dim=num_classes, use_linear=True)
+    elif model_name == 'comparator_network':
+        model = ComparatorNetwork(input_size=num_classes)
+    elif model_name == 'js_divergence':
+        model = JSD()
     else:
         raise ValueError(f"Model {model_name} not supported.")
 
@@ -63,6 +69,38 @@ def negative_loss(loss_fn):
 
     return neg_loss
 
+
+class LogisticRegression(nn.Module):
+    def __init__(self, input_dim, pretrained_model=None, device=torch.device("cuda")):
+        super(LogisticRegression, self).__init__()
+        self.linear = nn.Linear(input_dim, 1)
+
+        # Initialize from pretrained model if provided
+        if pretrained_model:
+            self.linear.weight.data = pretrained_model.weight.data.clone().detach().requires_grad_(False)
+            self.linear.bias.data = pretrained_model.bias.data.clone().detach().requires_grad_(False)
+        self.linear.to(device)
+
+    def forward(self, x):
+        return torch.sigmoid(self.linear(x))
+
+    def fit(self, X, y, epochs=1000, lr=0.01, device=torch.device("cuda")):
+        y = y.view(-1, 1)
+        criterion = nn.BCELoss()
+        optimizer = optim.SGD(self.parameters(), lr=lr)
+
+        for epoch in range(epochs):
+            optimizer.zero_grad()
+            outputs = self(X)
+            loss = criterion(outputs, y)
+            loss.backward()
+            optimizer.step()
+
+    def predict(self, X):
+        X = torch.tensor(X, dtype=torch.float32)
+        outputs = self(X)
+        return (outputs >= 0.5).float().view(-1)
+
 class SimpleBinaryClassifier(nn.Module):
     def __init__(self, input_size):
         super(SimpleBinaryClassifier, self).__init__()
@@ -79,10 +117,8 @@ class SimpleBinaryClassifier(nn.Module):
     def forward(self, x):
         x = torch.relu(self.bn1(self.fc1(x)))
         x = self.dropout1(x)
-
         x = torch.relu(self.bn2(self.fc2(x)))
         x = self.dropout2(x)
-
         x = torch.sigmoid(self.fc3(x))
         return x
 
@@ -105,10 +141,9 @@ class ComparisonModel(nn.Module):
 
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, v1, v2):
+    def forward(self, x1, x2):
         if self.use_linear:
-            v1 = self.linear_transform(v1 - v2)
-            #v2 = self.linear_transform(v1 - v2)
+            v1 = self.linear_transform(x1 - x2)
 
         if self.use_norm:
             v1 = self.normalize(v1)
@@ -119,6 +154,45 @@ class ComparisonModel(nn.Module):
 
         # Apply the sigmoid function
         output = self.sigmoid(inner_product)
+        return output
+
+
+class JSD(nn.Module):
+    def __init__(self):
+        super(JSD, self).__init__()
+        self.kl = nn.KLDivLoss(reduction='none', log_target=True)
+
+    def forward(self, logits_p: torch.tensor, logits_q: torch.tensor):
+        p = F.softmax(logits_p, dim=-1)
+        q = F.softmax(logits_q, dim=-1)
+        p, q = p.view(-1, p.size(-1)), q.view(-1, q.size(-1))
+        m = (0.5 * (p + q)).log()
+        return 0.5 * (self.kl(m, p.log()) + self.kl(m, q.log())).sum(axis=-1)
+class FeatureExtractor(nn.Module):
+    def __init__(self, input_size):
+        super(FeatureExtractor, self).__init__()
+        self.fc1 = nn.Linear(input_size, 128)
+        self.bn1 = nn.BatchNorm1d(128)
+        self.fc2 = nn.Linear(128, 64)
+        self.bn2 = nn.BatchNorm1d(64)
+
+    def forward(self, x):
+        x = torch.relu(self.bn1(self.fc1(x)))
+        x = torch.relu(self.bn2(self.fc2(x)))
+        return x
+
+
+class ComparatorNetwork(nn.Module):
+    def __init__(self, input_size):
+        super(ComparatorNetwork, self).__init__()
+        self.feature_extractor = FeatureExtractor(input_size)
+        self.fc = nn.Linear(64 * 2, 1)
+
+    def forward(self, x1, x2):
+        features1 = self.feature_extractor(x1)
+        features2 = self.feature_extractor(x2)
+        combined_features = torch.cat((features1, features2), dim=1)
+        output = torch.sigmoid(self.fc(combined_features))
         return output
 
 

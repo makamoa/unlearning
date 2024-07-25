@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.nn import KLDivLoss
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.tensorboard import SummaryWriter
 import argparse
 import os
 import yaml
 from datetime import datetime
-from models import ComparisonModel, get_model, SimpleBinaryClassifier, negative_loss
+from models import ComparisonModel, get_model, SimpleBinaryClassifier, negative_loss, LogisticRegression
 from data import get_cifar100_dataloaders, CorrespondingLoaders
 import copy
 
@@ -58,6 +59,8 @@ def initialize_metrics(mode='train'):
             'train_performance_loss': 0.0,
             'train_top1': 0.0,
             'train_top5': 0.0,
+            'train_top1_forget': 0.0,
+            'train_top5_forget': 0.0,
             'train_binary_accuracy': 0.0,
             'val_loss': 0.0,
             'val_student_loss': 0.0,
@@ -65,17 +68,21 @@ def initialize_metrics(mode='train'):
             'val_performance_loss': 0.0,
             'val_top1': 0.0,
             'val_top5': 0.0,
+            'val_top1_forget': 0.0,
+            'val_top5_forget': 0.0,
             'val_binary_accuracy': 0.0,
         }
     else:
         raise ValueError(f'Unknown mode: {mode}')
 
-def update_metrics(metrics, loss_student, loss_classifier, loss_performance, top1, top5, binary_accuracy, mode='train'):
+def update_metrics(metrics, loss_student, loss_classifier, loss_performance, top1, top5, top1_forget, top5_forget, binary_accuracy, mode='train'):
     metrics[f'{mode}_student_loss'] += loss_student.item()
     metrics[f'{mode}_classifier_loss'] += loss_classifier.item()
     metrics[f'{mode}_performance_loss'] += loss_performance.item()
     metrics[f'{mode}_top1'] += top1.item()
     metrics[f'{mode}_top5'] += top5.item()
+    metrics[f'{mode}_top1_forget'] += top1_forget.item()
+    metrics[f'{mode}_top5_forget'] += top5_forget.item()
     metrics[f'{mode}_binary_accuracy'] += binary_accuracy.item()
 
 def average_metrics(metrics, dataset_size, mode='train'):
@@ -84,13 +91,15 @@ def average_metrics(metrics, dataset_size, mode='train'):
     metrics[f'{mode}_performance_loss'] /= dataset_size
     metrics[f'{mode}_top1'] /= dataset_size
     metrics[f'{mode}_top5'] /= dataset_size
+    metrics[f'{mode}_top1_forget'] /= dataset_size
+    metrics[f'{mode}_top5_forget'] /= dataset_size
     metrics[f'{mode}_binary_accuracy'] /= dataset_size
 
 def log_metrics(writer, metrics, epoch, mode='train'):
     writer.add_scalars(f'Loss/{mode}', {'student_loss' : metrics[f'{mode}_student_loss'],
                                         'classifier_loss' : metrics[f'{mode}_classifier_loss']}, epoch)
-    writer.add_scalar(f'Accuracy/{mode}_top1', metrics[f'{mode}_top1'], epoch)
-    writer.add_scalar(f'Accuracy/{mode}_top5', metrics[f'{mode}_top5'], epoch)
+    writer.add_scalars(f'Accuracy/{mode}_top1', {'retain' : metrics[f'{mode}_top1'], 'forget' : metrics[f'{mode}_top1_forget']}, epoch)
+    writer.add_scalars(f'Accuracy/{mode}_top5', {'retain' : metrics[f'{mode}_top5'], 'forget' : metrics[f'{mode}_top5_forget']}, epoch)
     writer.add_scalar(f'Accuracy/{mode}_binary_accuracy', metrics[f'{mode}_binary_accuracy'], epoch)
 
 def save_config(config, filename):
@@ -352,16 +361,24 @@ def untrain_models_simple(student, teacher, classifier, train_loader, val_loader
     print(f'Classifier model saved to {classifier_save_path}')
     writer.close()
 
+def train_classifier(X, y, **kwargs):
+    u_classifier = LogisticRegression(input_dim=1, device='cpu')
+    X = X.detach().cpu()
+    y = y.detach().cpu()
+    u_classifier.fit(X, y, device='cpu', **kwargs)
+    predictions = u_classifier.predict(X)
+    return predictions, u_classifier.linear
+
 def untrain_models_contrastive(student, teacher, classifier, train_loader, val_loader, retain_loader, forget_loader, num_epochs=10, learning_rate=0.001,
                  log_dir='runs', device='cuda', name_prefix=get_current_datetime_string(),
                    freeze_classifier=False, freeze_student=False,
-                   stoppage=False):
+                   stoppage=False, reduction_size=16):
     # Define loss function and optimizers
     criterion = nn.BCELoss()
     negative_criterion = negative_loss(criterion)
     val_criterion = nn.CrossEntropyLoss()
     student_optimizer = optim.Adam(student.parameters(), lr=learning_rate)
-    classifier_optimizer = optim.Adam(classifier.parameters(), lr=learning_rate)
+    #classifier_optimizer = optim.Adam(classifier.parameters(), lr=learning_rate)
 
     # Initialize TensorBoard SummaryWriter
     writer = SummaryWriter(os.path.join(log_dir, name_prefix))
@@ -371,8 +388,13 @@ def untrain_models_contrastive(student, teacher, classifier, train_loader, val_l
         student.train()
         classifier.train()
         metrics = initialize_metrics(mode='train')
-
+        total_iterations = len(val_loader_ordered)
         for i, ((inputs_retain, labels_retain), (inputs_forget, labels_forget), (inputs_val, labels_val), (inputs_val_2, labels_val_2)) in enumerate(zip(retain_loader, forget_loader_ordered, val_loader_ordered, val_loader_ordered_2)):
+            if i == total_iterations - 1:
+                'Skipping last batch'
+                print(inputs_forget.shape)
+                i-=1
+                break
             assert labels_val.eq(labels_forget).all()
             assert inputs_val.ne(inputs_forget).any()
             assert labels_val_2.eq(labels_val).all()
@@ -397,20 +419,24 @@ def untrain_models_contrastive(student, teacher, classifier, train_loader, val_l
             student_outputs_val_2 = student(inputs_val_2)
             teacher_outputs_val_2 = teacher(inputs_val_2)
             # Create labels for classifier
-            forget_labels = torch.ones(batch_size, 1).to(device)
-            val_labels = torch.zeros(batch_size, 1).to(device)
+            # forget_labels = torch.ones(batch_size, 1).to(device)
+            # val_labels = torch.zeros(batch_size, 1).to(device)
 
             # Shuffle inputs to create different pairs
             shuffled_indices = torch.randperm(2*batch_size)
 
             # Combine same and different pairs
-            combined_outputs_1 = torch.cat((student_outputs_forget, teacher_outputs_val), dim=0)
-            combined_outputs_2 = torch.cat((teacher_outputs_val_2, teacher_outputs_val), dim=0)
+            outputs_1 = classifier(student_outputs_forget, labels_forget)
+            outputs_2 = classifier(teacher_outputs_val, labels_val)
+            outputs_1 = outputs_1.view(batch_size // reduction_size, reduction_size, -1).mean(dim=1, keepdim=False)
+            outputs_2 = outputs_2.view(batch_size // reduction_size, reduction_size, -1).mean(dim=1, keepdim=False)
+            forget_labels = torch.ones(batch_size // reduction_size, 1).to(device)
+            val_labels = torch.zeros(batch_size // reduction_size, 1).to(device)
+            combined_outputs = torch.cat((outputs_1, outputs_2), dim=0)
             combined_labels = torch.cat((forget_labels, val_labels), dim=0)
-            # Shuffle forget and validation labels
-            combined_outputs_1 = combined_outputs_1[shuffled_indices]
-            combined_outputs_2 = combined_outputs_2[shuffled_indices]
-            combined_labels = combined_labels[shuffled_indices]
+            shuffled_indices = torch.randperm(2 * batch_size // reduction_size)
+            # combined_outputs = combined_outputs[shuffled_indices]
+            # combined_labels = combined_labels[shuffled_indices]
             # Train classifier
             if not freeze_classifier:
                 classifier_optimizer.zero_grad()
@@ -422,8 +448,10 @@ def untrain_models_contrastive(student, teacher, classifier, train_loader, val_l
             # Train student to mimic teacher
             if not freeze_student:
                 student_optimizer.zero_grad()
-                student_pred = classifier(combined_outputs_1, combined_outputs_2)
-                student_loss_value = negative_criterion(student_pred, combined_labels)
+                predictions, linear_ = train_classifier(combined_outputs, combined_labels, epochs=1000, lr=0.01)
+                u_classifier = LogisticRegression(input_dim=1, pretrained_model=linear_)
+                predictions = u_classifier(combined_outputs)
+                student_loss_value = negative_criterion(predictions, combined_labels)
                 student_loss_value.backward()
                 student_optimizer.step()
 
@@ -431,14 +459,16 @@ def untrain_models_contrastive(student, teacher, classifier, train_loader, val_l
                 pred = student(inputs_retain)
                 performance_loss = val_criterion(pred, labels_retain)
                 student_top1, student_top5 = calculate_accuracy(pred, labels_retain, topk=(1, 5))
-                classifier_pred = classifier(combined_outputs_1, combined_outputs_2)
-                binary_accuracy = calculate_binary_accuracy(classifier_pred, combined_labels)
-                classifier_loss_value = criterion(classifier_pred, combined_labels)
-                student_loss_value = negative_criterion(classifier_pred, combined_labels)
-                update_metrics(metrics, -student_loss_value, classifier_loss_value, performance_loss, student_top1, student_top5, binary_accuracy, mode='train')
+                acc_ = calculate_binary_accuracy(predictions, combined_labels, threshold=0.5)
+                pred = student(inputs_forget)
+                student_top1_forget, student_top5_forget = calculate_accuracy(pred, labels_forget, topk=(1, 5))
+                update_metrics(metrics, -student_loss_value, torch.tensor([-1]),
+                               performance_loss, student_top1,
+                               student_top5, student_top1_forget,
+                               student_top5_forget, acc_,
+                               mode='train')
 
         average_metrics(metrics, i + 1, mode='train')
-
         # Validation loop
         student.eval()
         classifier.eval()
@@ -448,14 +478,12 @@ def untrain_models_contrastive(student, teacher, classifier, train_loader, val_l
                 inputs = inputs.to(device)
                 labels = labels.to(device)
                 batch_size = inputs.size(0)
-
                 # Get outputs from student and teacher models
                 student_outputs = student(inputs)
-
                 performance_loss = val_criterion(student_outputs, labels)
                 student_top1, student_top5 = calculate_accuracy(student_outputs, labels, topk=(1, 5))
                 update_metrics(metrics, torch.tensor([-1]), torch.tensor([-1]), performance_loss, student_top1,
-                               student_top5, torch.tensor([-1]), mode='val')
+                               student_top5, torch.tensor([-1]), torch.tensor([-1]), torch.tensor([-1]), mode='val')
 
         average_metrics(metrics, len(val_loader), mode='val')
 
@@ -463,9 +491,9 @@ def untrain_models_contrastive(student, teacher, classifier, train_loader, val_l
         log_metrics(writer, metrics, epoch, mode='train')
         log_metrics(writer, metrics, epoch, mode='val')
 
-        print(f'Epoch {epoch + 1}/{num_epochs}, Train Classifier Loss: {metrics["train_classifier_loss"]:.4f}, Train Top-1 Accuracy: {metrics["train_top1"]:.2f}%, Train Top-5 Accuracy: {metrics["train_top5"]:.2f}%,  Classifier Accuracy: {metrics["train_binary_accuracy"]:.2f}%')
+        print(f'Epoch {epoch + 1}/{num_epochs}, Train Classifier Loss: {metrics["train_student_loss"]:.4f}, Train Top-1 Accuracy: {metrics["train_top1"]:.2f}%, Train Top-5 Accuracy: {metrics["train_top5"]:.2f}%,  Train Top-1 Accuracy (Forget): {metrics["train_top1_forget"]:.2f}%, Train Top-5 Accuracy (Forget): {metrics["train_top5_forget"]:.2f}%,  Classifier Accuracy: {metrics["train_binary_accuracy"]:.2f}%')
         print(f'                  Val Loss: {metrics["val_student_loss"]:.4f}, Val Top-1 Accuracy: {metrics["val_top1"]:.2f}%, Val Top-5 Accuracy: {metrics["val_top5"]:.2f}%')
-        if metrics["train_binary_accuracy"] < 0.55 and stoppage:
+        if metrics["train_binary_accuracy"] < 0.50 and stoppage:
             print('Training is finished with accuracy {:.4f}'.format(binary_accuracy))
             print(
                 f'Epoch {epoch + 1}/{num_epochs}, Train Classifier Loss: {metrics["train_classifier_loss"]:.4f}, Train Top-1 Accuracy: {metrics["train_top1"]:.2f}%, Train Top-5 Accuracy: {metrics["train_top5"]:.2f}%,  Classifier Accuracy: {metrics["train_binary_accuracy"]:.2f}%')
@@ -526,9 +554,9 @@ def main(args):
         teacher = get_model(args.model, num_classes=100, pretrained_weights=None,
                           weight_path=args.weight_path)
         freeze_model(teacher)
-        classifier = get_model('contrastive_classifier', num_classes=100, weight_path=args.weight_path_classifier)
-        if args.freeze_classifier:
-            freeze_model(classifier)
+        classifier = nn.CrossEntropyLoss(reduction='none')
+        # if args.freeze_classifier:
+        #     freeze_model(classifier)
         student = get_model(args.model, num_classes=100, pretrained_weights=None,
                             weight_path=args.weight_path_student)
         if args.freeze_student:

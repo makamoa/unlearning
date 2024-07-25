@@ -2,9 +2,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 class KLDivLossCustom(nn.Module):
-    def __init__(self, temperature=1.0):
+    def __init__(self, temperature=1.0, reduction='batchmean'):
         super(KLDivLossCustom, self).__init__()
         self.temperature = temperature
+        self.reduction = reduction
 
     def forward(self, output_1, output_2):
         # Softmax with temperature scaling
@@ -12,7 +13,7 @@ class KLDivLossCustom(nn.Module):
         output_2_soft = F.softmax(output_2 / self.temperature, dim=1)
 
         # KL Divergence loss
-        kl_loss = F.kl_div(output_1_soft, output_2_soft, reduction='batchmean')
+        kl_loss = F.kl_div(output_1_soft, output_2_soft, reduction=self.reduction)
         return kl_loss
 
 class NegativeCrossEntropyLoss(nn.Module):

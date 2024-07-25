@@ -133,7 +133,6 @@ def untrain_constrained(model,
             update_metrics(metrics_forget, -forget_loss, top1, top5,
                            mode='train')
             update_additional_metrics(metrics_both, grad=curr_grad_norm)
-            
 
         average_metrics(metrics_retain, n_batches, mode='train')
         average_metrics(metrics_forget, n_batches, mode='train')
