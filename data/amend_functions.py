@@ -25,6 +25,32 @@ def class_to_indices_mapper(dataset: torch.utils.data.Dataset) -> Dict:
     cls_to_idx = {cls: np.flatnonzero(targets == cls) for cls in classes}
     return cls_to_idx
 
+def generate_random_list(upper_limit: int,
+                         excluded_number: int,
+                         count: int) -> np.array:
+    """
+    Generate a list of `count` random integers between 0 and `upper_limit`-1,
+    excluding `excluded_number`.
+    
+    Args:
+        upper_limit: Upper limit of the range (exclusive).
+        excluded_number (int): The number to exclude.
+        count (int): The number of random integers to generate.
+    
+    Returns:
+        numpy.array: An array of `count` random integers
+            between 0 and `upper_limit`-1, excluding `excluded_number`.
+    """
+    if excluded_number < 0 or excluded_number >= upper_limit:
+        raise ValueError(
+            "excluded_number must be within the range 0 to upper_limit-1"
+            )
+
+    valid_numbers = np.array([i for i in range(upper_limit)
+                              if i != excluded_number])
+    
+    return np.random.choice(valid_numbers, count, replace=True)
+
 def uniform_confuser(confuse_level=0.1, validation_split=0.2,
                      random_seed=None) -> Callable:
     """
@@ -32,12 +58,12 @@ def uniform_confuser(confuse_level=0.1, validation_split=0.2,
     level of confusion into the training data.
 
     Args:
-        confuse_level (float): The proportion of training data to be
-            confused by altering their class labels. Default is 0.1.
-        validation_split (float): The proportion of the dataset to be
-            used for validation. Default is 0.2.
-        random_seed (int, optional): Seed for the random number
-            generator to ensure reproducibility. Default is None.
+        confuse_level: The proportion of training data to be
+            confused by altering their class labels.
+        validation_split: The proportion of the dataset to be
+            used for validation.
+        random_seed: Seed for the random number generator to ensure
+            reproducibility.
 
     Returns:
         function: A function that takes a dataset as input and returns
@@ -63,11 +89,22 @@ def uniform_confuser(confuse_level=0.1, validation_split=0.2,
             val_split_idx = int((1 - validation_split) * current_length)
             confuse_split_idx = int(val_split_idx * confuse_level)
             assert confuse_split_idx <= val_split_idx
-            val_idx = np.concatenate((val_idx, indices[val_split_idx:]))
-            amended_train_idx = np.concatenate((amended_train_idx, indices[:confuse_split_idx]))
-            retain_train_idx = np.concatenate((retain_train_idx, indices[confuse_split_idx:val_split_idx]))
+            val_idx = np.concatenate(
+                (val_idx, indices[val_split_idx:]))
+            amended_train_idx = np.concatenate(
+                (amended_train_idx, indices[:confuse_split_idx]))
+            retain_train_idx = np.concatenate(
+                (retain_train_idx, indices[confuse_split_idx:val_split_idx]))
+            # `confusion targets` is an array of new, confused labels;
+            # Since `confuse_split_idx` represents also the number of
+            # confused indices, we utilize it as the `count` argument for 
+            # the `generate_random_list` function.
+            confusion_targets = generate_random_list(
+                n_classes,
+                target,
+                confuse_split_idx)
             # Update the targets for the indices in amended_train_idx
-            for idx in indices[:confuse_split_idx]:
-                dataset.targets[idx] = (target + 1) % n_classes
+            for counter, idx in enumerate(indices[:confuse_split_idx]):
+                dataset.targets[idx] = confusion_targets[counter]
         return dataset, amended_train_idx, retain_train_idx, val_idx
     return amend_function

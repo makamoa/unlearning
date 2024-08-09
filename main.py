@@ -5,26 +5,19 @@ import torch.optim as optim
 import torch.nn as nn
 from models import get_model
 import data
-from optimizer import (
-    SAM,
+from metrics import (
     base_loss,
-    KL_retain_loss,
-    KL_forget_loss,
-    inverse_KL_forget_loss,
-    NegativeCrossEntropyLoss,
-    negative_CE_loss
+    negative_CE_loss,
+    reference_loss
 )
-import torch.optim.lr_scheduler as lr_scheduler
 
-from train_model import train_model
-from untrain_baselines import untrain_model
-from helper_functions import (
+from tensorboard_settings import (
     build_name_prefix,
     load_config,
     save_config
 )
 
-from train import train_model, untrain_model
+from train import train_model
 from untrain_baselines import (
     catastrophic_forgetting,
     exact_unlearning,
@@ -41,10 +34,12 @@ def main(args):
                                            validation_split=0.1,
                                            random_seed=42,
                                            data_dir=args.data_dir)
-    data_confuser = data.uniform_confuser(confuse_level=.0, random_seed=42)
+    # data_confuser = data.uniform_confuser(confuse_level=.0, random_seed=42)
+    data_confuser = data.uniform_confuser(confuse_level=.1, random_seed=42)
     splitter = data.mix_both_sets(
         amend_split=1.,
-        retain_split=0.1,
+        # retain_split=0.1,
+        retain_split=0.,
         random_seed=42
         )
     confused_dataset_handler = data.AmendedDatasetHandler(
@@ -54,6 +49,8 @@ def main(args):
         )
     train_loader, val_loader, test_loader, forget_loader, \
     retain_loader, unseen_loader = confused_dataset_handler.get_dataloaders()
+
+    print(f'Loader is loaded: {confused_dataset_handler.forget_retain_function}')
 
     # Initialize model
     model = get_model(args.model, num_classes=100, pretrained_weights=None,
@@ -108,7 +105,7 @@ def main(args):
                 device=args.device,
                 name_prefix=args.name_prefix,
                 shot_epoch=None,
-                stopping_criterion_enabled=args.stop_criterion)
+                stopping_criterion=args.stop_criterion)
 
         if args.unlearning_algorithm == 'neggradplus':
             forget_optimizer = torch.optim.SGD(model.parameters(),
@@ -125,7 +122,7 @@ def main(args):
                         device=args.device,
                         name_prefix=args.name_prefix,
                         shot_epoch=None,
-                        stopping_criterion_enabled=args.stop_criterion)
+                        stopping_criterion=args.stop_criterion)
             
         if args.unlearning_algorithm == 'euk':
             exact_unlearning(model=model,
@@ -139,7 +136,7 @@ def main(args):
                             device=args.device,
                             name_prefix=args.name_prefix,
                             shot_epoch=0,
-                            stopping_criterion_enabled=False)
+                            stopping_criterion=args.stop_criterion)
             
         if args.unlearning_algorithm == 'cfk':
             catastrophic_forgetting(model=model,
@@ -153,39 +150,74 @@ def main(args):
                                     device=args.device,
                                     name_prefix=args.name_prefix,
                                     shot_epoch=0,
-                                    stopping_criterion_enabled=False)
+                                    stopping_criterion=args.stop_criterion)
 
-        if args.unlearning_algorithm == 'constrained':
-            untrain_constrained(model=model, 
-                                retainloader=retain_loader,
-                                forgetloader=forget_loader,
-                                unseenloader=unseen_loader,
+        if args.unlearning_algorithm == 'constrained_unlearning':
+            # unlearning in the constrained sense
+            loss_fn_objective = negative_CE_loss
+            loss_fn_condition = base_loss
+            prev_val_loss = untrain_constrained(model=model,
+                                                model_teacher=None,
+                                                loss_fn_objective=loss_fn_objective,
+                                                loader_objective=forget_loader,
+                                                loss_fn_condition = loss_fn_condition,
+                                                loader_condition=retain_loader,
+                                                validloader=val_loader,
+                                                internal_method=args.constrained_internal_method,
+                                                num_epochs=args.untrain_num_epochs,
+                                                learning_rate=args.learning_rate,
+                                                log_dir=args.log_dir,
+                                                device=args.device,
+                                                name_prefix=args.name_prefix,
+                                                stopping_criterion=args.stop_criterion)
+            
+        if args.unlearning_algorithm == 'constrained_learning':
+            loss_fn_objective = base_loss
+            loss_fn_condition = reference_loss
+            full_name_prefix = args.name_prefix + \
+                '_' + args.unlearning_algorithm + \
+                '_' + args.constrained_internal_method + \
+                '_' + args.stop_criterion
+            print('Starting constrained learning.')
+            if args.stop_criterion == 'confusion':
+                prev_val_loss = None
+                num_epochs = args.untrain_num_epochs
+            elif args.stop_criterion == 'finetuning':
+                num_epochs = args.finetuning_num_epochs
+            untrain_constrained(model=model,
+                                model_teacher=None,
+                                loss_fn_objective=loss_fn_objective,
+                                loader_objective=retain_loader,
+                                loss_fn_condition=loss_fn_condition,
+                                loader_condition=forget_loader,
                                 validloader=val_loader,
-                                internal_method=args.constrained_internal_method,
-                                num_epochs=args.untrain_num_epochs,
+                                internal_method='lagrange',
+                                num_epochs=num_epochs,
                                 learning_rate=args.learning_rate,
                                 log_dir=args.log_dir,
                                 device=args.device,
-                                name_prefix=args.name_prefix,
-                                stopping_criterion_enabled=args.stop_criterion)
+                                name_prefix=full_name_prefix,
+                                stopping_criterion=args.stop_criterion,
+                                previous_val_loss=prev_val_loss,
+                                epsilon_preset=True)
 
-        if args.unlearning_algorithm in ['finetuning', 'SCRUB', 'neggradplus', 'constrained']:
-            # Once the unlearning is done, model is finetuned
-            print('Finetuning the model.')
-            if args.unlearning_algorithm in ['SCRUB', 'neggradplus']:
-                print(f'After unlearning by {args.unlearning_algorithm}')
-            full_name_prefix = args.name_prefix + '_' + args.unlearning_algorithm
-            finetuning(model=model,
-                    retainloader=retain_loader,
-                    forgetloader=forget_loader,
-                    validloader=val_loader,
-                    num_epochs=args.finetuning_num_epochs,
-                    learning_rate=args.learning_rate,
-                    log_dir=args.log_dir,
-                    device=args.device,
-                    name_prefix=full_name_prefix,
-                    shot_epoch=0,
-                    stopping_criterion_enabled=False)
+        # if args.unlearning_algorithm in ['finetuning', 'SCRUB', 'neggradplus', 'constrained_unlearning']:
+        #     # Once the unlearning is done, the model is finetuned
+        #     print('Finetuning the model.')
+        #     if args.unlearning_algorithm in ['SCRUB', 'neggradplus', 'constrained_unlearning']:
+        #         print(f'After unlearning by {args.unlearning_algorithm}')
+        #     full_name_prefix = args.name_prefix + '_' + args.unlearning_algorithm
+        #     finetuning(model=model,
+        #             retainloader=retain_loader,
+        #             forgetloader=forget_loader,
+        #             validloader=val_loader,
+        #             num_epochs=args.finetuning_num_epochs,
+        #             learning_rate=args.learning_rate,
+        #             log_dir=args.log_dir,
+        #             device=args.device,
+        #             name_prefix=full_name_prefix,
+        #             shot_epoch=0,
+        #             stopping_criterion_enabled=args.stop_criterion)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a model on CIFAR-100 with TensorBoard logging.")
@@ -213,23 +245,24 @@ if __name__ == "__main__":
     parser.add_argument('--untrain_num_epochs', type=int, default=0, help='Number of epochs to untrain for.')
     parser.add_argument('--finetuning_num_epochs', type=int, default=0, help='Number of epochs for finetining the model.')
     parser.add_argument('--unlearning_algorithm', type=str, help='Sets the unlearning algorithm. Available options: \
-                        [SCRUB, finetuning, euk, cfk, neggradplus, constrained]')
-    parser.add_argument('--stop_criterion', action='store_true', help='Whether to apply a stop criterion or not')
+                        [SCRUB, finetuning, euk, cfk, neggradplus, constrained_unlearning]')
+    parser.add_argument('--stop_criterion', type=str, default=None, help='What stop criterion to apply. Options: `unlearning`, `refining`, `forget-forever`.')
     parser.add_argument('--constrained_internal_method', type=str, help='Internal constrained optimization problem.')
+
 
 
     args = parser.parse_args()
     if args.untrain:
         assert args.weight_path is not None
 
-    if args.unlearning_algorithm not in \
-        ['SCRUB', 'finetuning', 'euk', 'cfk', 'neggradplus', 'constrained']:
+    if args.untrain and args.unlearning_algorithm not in \
+        ['SCRUB', 'finetuning', 'euk', 'cfk', 'neggradplus', 'constrained_unlearning', 'constrained_learning']:
         raise ValueError('`unlearning_algorithm` value is not known')
 
     if args.unlearning_algorithm == 'finetuning' and args.finetuning_num_epochs == 0:
         raise UserWarning('`finetuning_num_epochs` is zero')
 
-    if args.unlearning_algorithm == 'constrained' and\
+    if args.unlearning_algorithm in ['constrained_unlearning', 'constrained_learning'] and\
         args.constrained_internal_method not in ['penalty', 'lagrange']:
         raise ValueError('Unknown value for `constrained_internal_method`.')
 

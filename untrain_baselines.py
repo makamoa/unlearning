@@ -1,9 +1,10 @@
 import torch
 from torch import optim
-from helper_functions import get_current_datetime_string
+from tensorboard_settings import get_current_datetime_string
 from metrics import calculate_accuracy
 from train import untrain_model
-from optimizer import KL_retain_loss, KL_forget_loss, negative_CE_loss
+from metrics import KL_retain_loss, KL_forget_loss, negative_CE_loss
+import warnings
 
 from typing import Literal, Callable
 
@@ -23,7 +24,7 @@ def catastrophic_forgetting(model: torch.nn.Module,
                             device: Literal['cuda', 'cpu']='cuda',
                             name_prefix: str=get_current_datetime_string(),
                             shot_epoch=None,
-                            stopping_criterion_enabled=False) -> None:
+                            stopping_criterion: str=None) -> None:
     """
     Freeze the first `k` layers of the model and fine-tune the rest using base_loss.
 
@@ -59,6 +60,9 @@ def catastrophic_forgetting(model: torch.nn.Module,
     print(f'Running Catastrophic Forgetting-k.')
     print(f'First {k} layers are to be frozen...')
 
+    if stopping_criterion in ['unlearning', 'forget-forever']:
+        warnings.warn('Most probably, the criterion is incompatible with the algorithm.')
+
     layers = list(model.children())
 
     assert type(k) == int, 'Number of layers must be an integer'
@@ -91,7 +95,7 @@ def catastrophic_forgetting(model: torch.nn.Module,
                   use_sam=False,
                   rho=None,
                   shot_epoch=shot_epoch,
-                  stopping_criterion_enabled=stopping_criterion_enabled)
+                  stopping_criterion=stopping_criterion)
     
     for param in model.parameters():
         param.requires_grad = True
@@ -110,7 +114,7 @@ def exact_unlearning(model: torch.nn.Module,
                      device: Literal['cuda', 'cpu']='cuda',
                      name_prefix: str=get_current_datetime_string(),
                      shot_epoch=None,
-                     stopping_criterion_enabled=False) -> None:
+                     stopping_criterion: str=None) -> None:
 
     """
     Freeze the first `k` layers of the model, reinitialize the rest, and
@@ -149,6 +153,9 @@ def exact_unlearning(model: torch.nn.Module,
 
     layers = list(model.children())
 
+    if stopping_criterion in ['unlearning', 'forget-forever']:
+        raise UserWarning('Most probably, the criterion is incompatible with the algorithm.')
+
     # if `k`` is negative, only last `k` layers are unfrozen
     if k < 0:
         k = len(layers) + k
@@ -183,7 +190,7 @@ def exact_unlearning(model: torch.nn.Module,
                   use_sam=False,
                   rho=None,
                   shot_epoch=shot_epoch,
-                  stopping_criterion_enabled=stopping_criterion_enabled)
+                  stopping_criterion=stopping_criterion)
 
     
     for param in model.parameters():
@@ -202,7 +209,7 @@ def finetuning(model: torch.nn.Module,
                device: Literal['cuda', 'cpu']='cuda',
                name_prefix: str=get_current_datetime_string(),
                shot_epoch=None,
-               stopping_criterion_enabled=False) -> None:
+               stopping_criterion: str=None) -> None:
 
     """
     Fine-tune the entire model on the retain set.
@@ -238,6 +245,9 @@ def finetuning(model: torch.nn.Module,
 
     name_prefix += '_finetuning'
 
+    if stopping_criterion in ['unlearning', 'forget-forever']:
+        raise UserWarning('Most probably, the criterion is incompatible with the algorithm.')
+
     untrain_model(model=model,
                   retainloader=retainloader,
                   forgetloader=forgetloader,
@@ -254,7 +264,7 @@ def finetuning(model: torch.nn.Module,
                   use_sam=False,
                   rho=None,
                   shot_epoch=shot_epoch,
-                  stopping_criterion_enabled=stopping_criterion_enabled)
+                  stopping_criterion=stopping_criterion)
 
     print('Fine-tuning complete.')
 
@@ -270,7 +280,7 @@ def neggradplus(model: torch.nn.Module,
                 device: Literal['cuda', 'cpu']='cuda',
                 name_prefix: str=get_current_datetime_string(),
                 shot_epoch=None,
-                stopping_criterion_enabled=False) -> None:
+                stopping_criterion: str=None) -> None:
 
     """
     Perform optimizer steps on the base_loss and then on the forget_loss.
@@ -320,7 +330,7 @@ def neggradplus(model: torch.nn.Module,
                   use_sam=False,
                   rho=None,
                   shot_epoch=shot_epoch,
-                  stopping_criterion_enabled=stopping_criterion_enabled)
+                  stopping_criterion=stopping_criterion)
 
     print('NegGrad+ complete.')
 
@@ -338,7 +348,7 @@ def SCRUB(model: torch.nn.Module,
           device: Literal['cuda', 'cpu']='cuda',
           name_prefix: str=get_current_datetime_string(),
           shot_epoch=None,
-          stopping_criterion_enabled=False) -> None:
+          stopping_criterion: str=None) -> None:
 
     """
     Perform unlearning using the SCRUB method.
@@ -393,6 +403,6 @@ def SCRUB(model: torch.nn.Module,
                   use_sam=False,
                   rho=None,
                   shot_epoch=shot_epoch,
-                  stopping_criterion_enabled=stopping_criterion_enabled)
+                  stopping_criterion=stopping_criterion)
 
     print('SCRUB complete.')

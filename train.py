@@ -10,8 +10,26 @@ from datetime import datetime
 from models import get_model
 import data
 from data import get_cifar100_dataloaders, CorrespondingLoaders
-from optimizer import SAM, base_loss, KL_retain_loss, KL_forget_loss, inverse_KL_forget_loss, NegativeCrossEntropyLoss, negative_CE_loss
+
+from metrics import (
+    base_loss,
+    KL_retain_loss,
+    KL_forget_loss,
+    negative_CE_loss,
+    compute_avg_loss
+)
+
+from optimizer import (
+    SAM,
+    unlearning_stopping_criterion,
+    refining_stopping_criterion,
+    forget_forever_stopping_criterion,
+    confusion_resolution_simple_stopping_criterion
+    )
+
 import torch.optim.lr_scheduler as lr_scheduler
+
+from train_constrained_unlearning import set_seed
 
 
 def get_current_datetime_string():
@@ -209,7 +227,8 @@ def untrain_model(model,
                   use_sam=False,
                   rho=0.05,
                   shot_epoch=None, 
-                  stopping_criterion_enabled=False) -> None:
+                  stopping_criterion=None,
+                  seed=42) -> None:
     """
     Unlearn a model based on the problem formulation
     `minimize baseloss + retainloss + forgetloss`. `baseloss` is
@@ -236,11 +255,14 @@ def untrain_model(model,
             This is done to save model metrics at the epoch of interest,
             e.g., in the end of the unlearning phase for unlearning algorithms
             like SCRUB, EU-k, CF-k etc.
-        stopping_criterion_enabled: If False, the algorithm runs for
-            `num_epochs`. If True, the algorithm stops when the forget loss
-            gets larger than the validation loss. Algorithm terminates not
-            later than `num_epochs` epochs.
+        stopping_criterion: If None, the algorithm runs for
+            `num_epochs`. If 'unlearning', the algorithm stops when the forget loss
+            gets larger than the validation loss; algorithm terminates not
+            later than `num_epochs` epochs. If 'refining', the algorithm will stop
+            if the validation loss has not decreased for the past 2 epochs.
     """
+
+    set_seed(seed)
 
     if name_prefix is None:
         name_prefix = get_current_datetime_string()
@@ -260,7 +282,20 @@ def untrain_model(model,
     for param in model_teacher.parameters():
         param.requires_grad = False
 
+    # Compute a randomly initialized model loss at request
+    random_init_model_loss = None
+    if stopping_criterion == 'confusion':
+        model_dumb = copy.deepcopy(model)
+        for layer in model_dumb.children():
+            if hasattr(layer, 'reset_parameters'):
+                layer.reset_parameters()
+        model_dumb.to('cuda')
+        random_init_model_loss = compute_avg_loss(model_dumb, forgetloader)
+        print(f'Randomly initialized model\'s loss on the forget loader is {random_init_model_loss}' )
+
     stop_training = False
+    val_loss_decreased_at_the_previous_epoch = True
+    previous_val_loss = None
 
     # Run unlearning epochs
     for epoch in range(num_epochs):
@@ -346,10 +381,24 @@ def untrain_model(model,
         log_metrics_unlearn(writer, metrics_retain, metrics_forget, epoch, mode='train')
         log_metrics(writer, metrics_retain, epoch, mode='val')
 
-        if stopping_criterion_enabled and \
-            (-1 * metrics_forget['train_loss']) >= metrics_retain['val_loss']:
-            print(f'Stopping unlearning at iteration {epoch+1}')
-            stop_training = True
+        stop_training_1 = unlearning_stopping_criterion(stopping_criterion,
+                                                      abs(metrics_forget['train_loss']),
+                                                      abs(metrics_retain['val_loss'])
+                                                      )
+    
+        (stop_training_2,
+        val_loss_decreased_at_the_previous_epoch,
+        previous_val_loss) = refining_stopping_criterion(
+            stopping_criterion,
+            val_loss_decreased_at_the_previous_epoch,
+            abs(metrics_retain['val_loss']),
+            previous_val_loss,
+            epoch)
+
+        stop_training_3 = forget_forever_stopping_criterion(stopping_criterion, metrics_retain['train_top5'])
+        stop_training_4 = confusion_resolution_simple_stopping_criterion(stopping_criterion, metrics_forget['train_loss'], random_init_model_loss)
+
+        stop_training = stop_training_1 or stop_training_2 or stop_training_3 or stop_training_4
 
     # Save the final model
     model_save_path = os.path.join(log_dir, f"{name_prefix}_model.pth")
@@ -362,7 +411,12 @@ def untrain_model(model,
 
     # Close the TensorBoard writer
     writer.close()
-    print('Unlearning complete')
+    if stopping_criterion is None or stopping_criterion == 'unlearning':
+        print('Unlearning complete')
+    elif stopping_criterion == 'refining':
+        print('Refinement complete')
+    elif stopping_criterion == 'forget-forever':
+        print('Removal complete')
 
 
 def perform_optimizer_step(model, model_teacher, inputs, labels, loss_fn, \

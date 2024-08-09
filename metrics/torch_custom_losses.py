@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+
 class KLDivLossCustom(nn.Module):
     def __init__(self, temperature=1.0):
         super(KLDivLossCustom, self).__init__()
@@ -53,7 +54,7 @@ def reference_loss(model, model_teacher, input, output, reference=4.2):
     # Define the reference value as a torch tensor
     reference_tensor = torch.tensor(reference, dtype=torch.float32, requires_grad=False)
     # Compute the loss as the absolute difference between the reference and the model's output
-    loss = torch.abs(nn.CrossEntropyLoss()(model(input), output) - reference_tensor)
+    loss = nn.CrossEntropyLoss()(model(input), output) - reference_tensor
     return loss
 
 def base_loss(model, model_teacher, input, output):
