@@ -73,7 +73,8 @@ def untrain_constrained(model,
                         name_prefix=get_current_datetime_string(),
                         stopping_criterion=None,
                         previous_val_loss=None,
-                        epsilon_preset=False,
+                        alpha=1.,
+                        alpha_growth_rate=1.01,
                         seed=42) -> None:
     """
     Unlearn a model based on the constrained problem formulation.
@@ -102,8 +103,6 @@ def untrain_constrained(model,
     """
 
     set_seed(seed)
-
-    reference_loss_value = None
     
     if name_prefix is None:
         name_prefix = get_current_datetime_string()
@@ -123,13 +122,7 @@ def untrain_constrained(model,
         param.requires_grad = False
 
     epsilon_condition = torch.tensor(0.25).requires_grad_(False)
-    alpha = 5.
-    if stopping_criterion in ['unlearning', None, 'forget-forever']:
-        dual_variable = torch.tensor(1.).requires_grad_(False).to(device)
-    elif stopping_criterion in ['refining', 'confusion']:
-        dual_variable = torch.tensor([1., 1.]).requires_grad_(False).to(device)
-    else:
-        raise ValueError('Unknown keyword')
+    dual_variable = torch.tensor(1.).requires_grad_(False).to(device)
 
     stop_training = False
     val_loss_decreased_at_the_previous_epoch = True
@@ -154,11 +147,9 @@ def untrain_constrained(model,
         assert type(random_init_model_loss) == float
 
     if stopping_criterion == 'confusion':
-        reference_loss_value = random_init_model_loss
+        epsilon_condition = torch.tensor(random_init_model_loss).requires_grad_(False) 
     if stopping_criterion == 'refining':
-        reference_loss_value = previous_val_loss
-
-    assert(type(reference_loss_value) == float)
+        epsilon_condition = torch.tensor(previous_val_loss).requires_grad_(False)
 
     # Run unlearning epochs
     print('Make sure the forgetloader has smaller size the retainloader.')
@@ -176,10 +167,10 @@ def untrain_constrained(model,
         # Untraining loop
         assert len(loader_objective) > 0 and len(loader_condition) > 0
 
-        if internal_method=='penalty':
+        if internal_method in ['penalty', 'augmented_lagrange']:
             print(f'Current alpha = {alpha}')
 
-        if internal_method=='lagrange':
+        if internal_method in ['lagrange', 'augmented_lagrange']:
             print(f'Current dual variable = {dual_variable.cpu()}')
 
         for batch_objective, batch_condition \
@@ -192,17 +183,12 @@ def untrain_constrained(model,
             inputs_condition, labels_condition = inputs_condition.to(device), labels_condition.to(device)
 
             loss_objective = loss_fn_objective(model, model_teacher, inputs_objective, labels_objective)
-            if stopping_criterion in ['unlearning', 'forget-forever', None]: # this is a hack, fix later
-                loss_condition = loss_fn_condition(model, model_teacher, inputs_condition, labels_condition)
-            elif stopping_criterion in ['refining', 'confusion']:
-                loss_condition = loss_fn_condition(model, model_teacher, inputs_condition, labels_condition,
-                                                   reference=reference_loss_value)
+            loss_condition = loss_fn_condition(model, model_teacher, inputs_condition, labels_condition)
+            
+            if stopping_criterion in ['refining', 'confusion']:
                 loss_forget = base_loss(model, model_teacher, inputs_condition, labels_condition)
-            else:
-                raise ValueError('Unknown keyword')
 
-
-            if epoch == 0 and not epsilon_preset:
+            if epoch == 0 and stopping_criterion not in ['confusion', 'refining']:
                 # epsilon_condition should be equal to an average over a batch
                 epsilon_condition = (n_batches - 1) * epsilon_condition
                 epsilon_condition += loss_condition.clone().detach().cpu()
@@ -225,39 +211,34 @@ def untrain_constrained(model,
 
             # lagrange method
             if internal_method == 'lagrange':
-                if stopping_criterion in ['unlearning', None, 'forget-forever']:
-                    lagrange_objective = loss_objective + dual_variable * (loss_condition - epsilon_condition)
-                elif stopping_criterion in ['refining', 'confusion']:
-                    lagrange_objective = loss_objective + \
-                        dual_variable[0] * (loss_condition - epsilon_condition) + \
-                        dual_variable[1] * (- loss_condition - epsilon_condition)
-                else:
-                    raise ValueError('Unknown keyword')
+                lagrange_objective = loss_objective + dual_variable * (loss_condition - epsilon_condition)
 
                 base_optimizer.zero_grad()
                 lagrange_objective.backward()
                 curr_grad_norm = _grad_norm(model)
                 base_optimizer.step()
 
-                if stopping_criterion in ['unlearning', None, 'forget-forever']:
-                    post_update_loss_condition = loss_fn_condition(model, model_teacher, inputs_condition, labels_condition)
-                elif stopping_criterion in ['refining', 'confusion']:
-                    post_update_loss_condition = loss_fn_condition(model, model_teacher, inputs_condition, labels_condition,
-                                                                   reference=reference_loss_value)
-                else:
-                    raise ValueError('Unknown keyword')
+                post_update_loss_condition = loss_fn_condition(model, model_teacher, inputs_condition, labels_condition)
 
                 with torch.no_grad():
-                    if stopping_criterion in ['unlearning', None, 'forget-forever']:
-                        dual_variable += learning_rate * (post_update_loss_condition - epsilon_condition)
-                    elif stopping_criterion in ['refining', 'confusion']:
-                        dual_variable[0] += learning_rate * (post_update_loss_condition - epsilon_condition) 
-                        dual_variable[1] += learning_rate * (-post_update_loss_condition - epsilon_condition)
-                        dual_variable[0] = torch.max(torch.tensor(0).requires_grad_(False), dual_variable[0])
-                        dual_variable[1] = torch.max(torch.tensor(0).requires_grad_(False), dual_variable[1])
-                    else:
-                        raise ValueError('Unknown keyword')
+                    dual_variable += learning_rate * (post_update_loss_condition - epsilon_condition)
+                    if stopping_criterion in ['unlearning', None, 'forget-forever']: # these criteria have inequality contraints
+                        dual_variable = torch.max(torch.tensor(0).requires_grad_(False), dual_variable)
+                    
 
+            # augmented lagrangian method
+            if internal_method == 'augmented_lagrange':
+                assert stopping_criterion in ['refining', 'confusion'] # augmented lagrangian must be utilizied only with equality contraints
+                augmented_lagrange_objective = loss_objective + dual_variable * (loss_condition - epsilon_condition) + alpha * (loss_condition - epsilon_condition) ** 2
+                base_optimizer.zero_grad()
+                augmented_lagrange_objective.backward()
+                curr_grad_norm = _grad_norm(model)
+                base_optimizer.step()
+
+                post_update_loss_condition = loss_fn_condition(model, model_teacher, inputs_condition, labels_condition)
+
+                with torch.no_grad():
+                    dual_variable += learning_rate * (post_update_loss_condition - epsilon_condition)
 
             top1, top5 = calculate_accuracy(model(inputs_condition),
                                             labels_condition, topk=(1, 5))
@@ -295,6 +276,9 @@ def untrain_constrained(model,
         if internal_method == 'penalty':
             if metrics_both['grad'] < 5. and epoch != 0:
                 alpha *= 1.05
+
+        if internal_method == 'augmented_lagrange':
+            alpha *= alpha_growth_rate
 
         # Validation loop
         model.eval()

@@ -290,7 +290,7 @@ def untrain_model(model,
             if hasattr(layer, 'reset_parameters'):
                 layer.reset_parameters()
         model_dumb.to('cuda')
-        random_init_model_loss = compute_avg_loss(model_dumb, forgetloader)
+        random_init_model_loss = compute_avg_loss(model_dumb, forgetloader, nn.CrossEntropyLoss())
         print(f'Randomly initialized model\'s loss on the forget loader is {random_init_model_loss}' )
 
     stop_training = False

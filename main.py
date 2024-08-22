@@ -35,7 +35,10 @@ def main(args):
                                            random_seed=42,
                                            data_dir=args.data_dir)
     # data_confuser = data.uniform_confuser(confuse_level=.0, random_seed=42)
-    data_confuser = data.uniform_confuser(confuse_level=.1, random_seed=42)
+    # data_confuser = data.uniform_confuser(confuse_level=.1, random_seed=42)
+    # data_confuser = data.uniform_confuser(confuse_level=.3, random_seed=42)
+    # data_confuser = data.uniform_confuser(confuse_level=.5, random_seed=42) # half of data is confused
+    data_confuser = data.uniform_confuser(confuse_level=.4, random_seed=42) # half of data is confused
     splitter = data.mix_both_sets(
         amend_split=1.,
         # retain_split=0.1,
@@ -173,7 +176,7 @@ def main(args):
             
         if args.unlearning_algorithm == 'constrained_learning':
             loss_fn_objective = base_loss
-            loss_fn_condition = reference_loss
+            loss_fn_condition = base_loss
             full_name_prefix = args.name_prefix + \
                 '_' + args.unlearning_algorithm + \
                 '_' + args.constrained_internal_method + \
@@ -191,7 +194,7 @@ def main(args):
                                 loss_fn_condition=loss_fn_condition,
                                 loader_condition=forget_loader,
                                 validloader=val_loader,
-                                internal_method='lagrange',
+                                internal_method=args.constrained_internal_method,
                                 num_epochs=num_epochs,
                                 learning_rate=args.learning_rate,
                                 log_dir=args.log_dir,
@@ -199,25 +202,27 @@ def main(args):
                                 name_prefix=full_name_prefix,
                                 stopping_criterion=args.stop_criterion,
                                 previous_val_loss=prev_val_loss,
-                                epsilon_preset=True)
+                                alpha=args.alpha,
+                                alpha_growth_rate=args.alpha_growth_rate)
 
         # if args.unlearning_algorithm in ['finetuning', 'SCRUB', 'neggradplus', 'constrained_unlearning']:
-        #     # Once the unlearning is done, the model is finetuned
-        #     print('Finetuning the model.')
-        #     if args.unlearning_algorithm in ['SCRUB', 'neggradplus', 'constrained_unlearning']:
-        #         print(f'After unlearning by {args.unlearning_algorithm}')
-        #     full_name_prefix = args.name_prefix + '_' + args.unlearning_algorithm
-        #     finetuning(model=model,
-        #             retainloader=retain_loader,
-        #             forgetloader=forget_loader,
-        #             validloader=val_loader,
-        #             num_epochs=args.finetuning_num_epochs,
-        #             learning_rate=args.learning_rate,
-        #             log_dir=args.log_dir,
-        #             device=args.device,
-        #             name_prefix=full_name_prefix,
-        #             shot_epoch=0,
-        #             stopping_criterion_enabled=args.stop_criterion)
+        if args.unlearning_algorithm in ['finetuning']:
+            # Once the unlearning is done, the model is finetuned
+            print('Finetuning the model.')
+            # if args.unlearning_algorithm in ['SCRUB', 'neggradplus', 'constrained_unlearning']:
+            #     print(f'After unlearning by {args.unlearning_algorithm}')
+            full_name_prefix = args.name_prefix + '_' + args.unlearning_algorithm
+            finetuning(model=model,
+                    retainloader=retain_loader,
+                    forgetloader=forget_loader,
+                    validloader=val_loader,
+                    num_epochs=args.finetuning_num_epochs,
+                    learning_rate=args.learning_rate,
+                    log_dir=args.log_dir,
+                    device=args.device,
+                    name_prefix=full_name_prefix,
+                    shot_epoch=0,
+                    stopping_criterion=args.stop_criterion)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a model on CIFAR-100 with TensorBoard logging.")
@@ -248,6 +253,8 @@ if __name__ == "__main__":
                         [SCRUB, finetuning, euk, cfk, neggradplus, constrained_unlearning]')
     parser.add_argument('--stop_criterion', type=str, default=None, help='What stop criterion to apply. Options: `unlearning`, `refining`, `forget-forever`.')
     parser.add_argument('--constrained_internal_method', type=str, help='Internal constrained optimization problem.')
+    parser.add_argument('--alpha', type=float, default=1., help='Penalty coefficient')
+    parser.add_argument('--alpha_growth_rate', type=float, default=1.01, help='Penalty coefficient growth rate')
 
 
 
@@ -263,7 +270,7 @@ if __name__ == "__main__":
         raise UserWarning('`finetuning_num_epochs` is zero')
 
     if args.unlearning_algorithm in ['constrained_unlearning', 'constrained_learning'] and\
-        args.constrained_internal_method not in ['penalty', 'lagrange']:
+        args.constrained_internal_method not in ['penalty', 'lagrange', 'augmented_lagrange']:
         raise ValueError('Unknown value for `constrained_internal_method`.')
 
     if args.retain_set:
