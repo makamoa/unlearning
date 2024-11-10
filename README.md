@@ -61,3 +61,26 @@ The repository is organized as follows:
 To train the model and perform constrained unlearning, run:
 ```bash
 python train_constrained_unlearning.py --num_epochs 10 --batch_size 32 --learning_rate 0.001 --data_dir './data/cifar100' --log_dir 'runs' --model 'resnet18' --device 'cuda' --untrain True --weight_path 'path_to_weights.pth'
+```
+
+### `train_contrastive.py`
+
+This script is designed to train a student model to mimic a teacher model using contrastive learning. Key features of this script include:
+
+- **Contrastive Learning Framework**: The student model learns to replicate the teacher model's representations by distinguishing between "same" and "different" data pairs.
+- **Binary Classifier Training**: A binary classifier is used to learn feature discrimination between outputs of the student and teacher models.
+- **Accuracy and Binary Accuracy Calculation**: Functions like `calculate_accuracy` and `calculate_binary_accuracy` provide metrics for top-k accuracy and binary classification accuracy, respectively.
+- **Metrics Tracking and Logging**: Metrics are tracked throughout training and validation, including student loss, classifier loss, top-1/top-5 accuracy, and binary accuracy. Metrics are logged to TensorBoard for visualization.
+- **Configuration Management**: Configurations can be saved and loaded using YAML files, making the script adaptable for different training settings.
+- **Device Compatibility**: Supports training on both CPU and GPU devices.
+
+The script can be run with different modes:
+- **`train`**: Trains the student model with contrastive learning.
+- **`untrain`**: Implements unlearning on specific data by constraining the model's memory.
+- **`untrain_contrastive`**: Applies contrastive unlearning to remove certain features or data points effectively.
+
+Run the script with the following example command:
+
+```bash
+python train_contrastive.py --num_epochs 10 --batch_size 32 --learning_rate 0.01 --data_dir './data/cifar100' --log_dir 'runs' --mode 'train'
+
