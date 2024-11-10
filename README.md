@@ -16,7 +16,7 @@ The repository is organized as follows:
 - `contrastive_discrimination/` - Directory for contrastive discrimination methods.
 - `helper_functions/` - Helper functions for metrics, logging, and model utilities.
 - `models/` - Model architectures, including batch averaging additions.
-- `optimizer/` - Optimizer configurations with batch averaging.
+- `optimizer/` - Optimizer configurations.
 - `runs/` - Directory for saving logs and checkpoints.
 - `contrastive_classifiers.ipynb` - Jupyter notebook for contrastive classification experiments.
 - `train.py` - Main training script.
