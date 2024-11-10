@@ -1,7 +1,5 @@
 # Constrained Unlearning Project
 
-This project provides a Python implementation of constrained unlearning, specifically for training neural networks on the CIFAR-100 dataset with the capability to selectively "forget" specific data points while retaining others. The project uses PyTorch and includes support for TensorBoard logging to visualize training metrics.
-
 ## Summary
 
 ### Machine Unlearning: A Constraint-Based Approach
