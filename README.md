@@ -10,7 +10,24 @@ This project is inspired by the emerging human right "to be forgotten" and the n
 
 ## Project Structure
 
-- `train_constrained_unlearning.py`: The main training script, which initializes and trains the model on CIFAR-100, implements constrained unlearning, and logs the results.
+The repository is organized as follows:
+
+- `data/` - Contains dataset-related files and preprocessing scripts.
+- `contrastive_discrimination/` - Directory for contrastive discrimination methods.
+- `helper_functions/` - Helper functions for metrics, logging, and model utilities.
+- `models/` - Model architectures, including batch averaging additions.
+- `optimizer/` - Optimizer configurations with batch averaging.
+- `runs/` - Directory for saving logs and checkpoints.
+- `contrastive_classifiers.ipynb` - Jupyter notebook for contrastive classification experiments.
+- `train.py` - Main training script.
+- `train_constrained_unlearning.py` - Script for constrained unlearning on CIFAR-100.
+- `train_contrastive.py` - Training script for contrastive models.
+- `test.py` - Script for testing models.
+- `environment.yml` - Conda environment file.
+- `requirements.txt` - Python dependencies.
+- `.gitignore` - Git ignore file.
+- `README.md` - Project README file.
+
 
 ### Key Functions
 
