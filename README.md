@@ -4,6 +4,9 @@
 
 ### Machine Unlearning: A Constraint-Based Approach
 
+![image](https://github.com/user-attachments/assets/7d113569-05e6-4c44-af39-1ae7cb17f008)
+
+
 This project is inspired by the emerging human right "to be forgotten" and the need to remove unethical model outputs, which highlights the demand for resource-efficient machine unlearning techniques. We introduce a novel framework based on constrained optimization, aimed at both robust and efficient machine unlearning. By formulating unlearning as a constrained optimization problem, our approach selectively removes specific data points while effectively preserving the model's overall performance. Additionally, we propose a constrained fine-tuning algorithm that enhances model accuracy on retained data while ensuring low accuracy on the forget set, effectively separating performance between the two. Extensive experimentation on CIFAR-100 using ResNet demonstrates the superior unlearning precision and computational efficiency of our method compared to existing techniques like SCRUB and NegGrad+. We also offer theoretical insights into our problem formulation, further reinforcing the robustness and efficacy of this approach.
 
 ## Project Structure
